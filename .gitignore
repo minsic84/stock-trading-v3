@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# 환경변수 파일 (중요: 개인정보 보호)
+.env
+.env.local
+.env.production
+
+# 데이터베이스 파일
+*.db
+*.sqlite
+*.sqlite3
+data/
+backups/
+
+# 로그 파일
+logs/
+*.log
+
+# IDE 설정
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS 파일
+.DS_Store
+Thumbs.db
+
+# 키움 API 관련 (개인정보)
+*.cert
+*.key
+
+# 임시 파일
+*.tmp
+*.temp
+temp/
+
+# 테스트 결과
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 빌드 파일
+build/
+dist/
+*.egg-info/
