@@ -1,0 +1,109 @@
+{
+  "migration_strategy": {
+    "type": "GRADUAL",
+    "batch_size": 50,
+    "parallel_processing": true,
+    "downtime_required": false
+  },
+  "schema_design": {
+    "unified_daily_table": {
+      "table_name": "daily_prices",
+      "partitioning": "BY_DATE",
+      "indexes": [
+        "PRIMARY KEY (stock_code, date)",
+        "INDEX idx_date (date)",
+        "INDEX idx_stock_code (stock_code)",
+        "INDEX idx_volume (volume)"
+      ]
+    },
+    "stocks_table": {
+      "enhancements": [
+        "Full-text search on name",
+        "JSON column for extended attributes",
+        "Improved indexing on market, market_cap"
+      ]
+    },
+    "new_tables": [
+      "supply_demand_data",
+      "minute_data",
+      "market_events"
+    ]
+  },
+  "performance_optimization": {
+    "indexing_strategy": [
+      "Composite indexes for common queries",
+      "Covering indexes for read-heavy operations",
+      "Partial indexes for filtered queries"
+    ],
+    "partitioning": {
+      "daily_prices": "RANGE partitioning by date (monthly)",
+      "supply_demand": "RANGE partitioning by date (monthly)",
+      "minute_data": "RANGE partitioning by date (weekly)"
+    },
+    "caching": [
+      "Redis for frequently accessed stock info",
+      "Query result caching for dashboard",
+      "Connection pooling optimization"
+    ]
+  },
+  "data_migration_steps": [
+    {
+      "step": 1,
+      "name": "MySQL 환경 준비",
+      "tasks": [
+        "MySQL 서버 설치 및 설정",
+        "데이터베이스 및 사용자 생성",
+        "스키마 생성 스크립트 실행"
+      ],
+      "estimated_time": "2시간"
+    },
+    {
+      "step": 2,
+      "name": "stocks 테이블 마이그레이션",
+      "tasks": [
+        "SQLite에서 stocks 데이터 추출",
+        "MySQL로 데이터 이관",
+        "데이터 무결성 검증"
+      ],
+      "estimated_time": "30분"
+    },
+    {
+      "step": 3,
+      "name": "daily_prices 통합 마이그레이션",
+      "tasks": [
+        "종목별 테이블을 단일 테이블로 통합",
+        "배치별 데이터 이관",
+        "파티셔닝 적용"
+      ],
+      "estimated_time": "2-4시간"
+    },
+    {
+      "step": 4,
+      "name": "인덱스 및 최적화",
+      "tasks": [
+        "모든 인덱스 생성",
+        "성능 테스트",
+        "쿼리 최적화"
+      ],
+      "estimated_time": "1시간"
+    },
+    {
+      "step": 5,
+      "name": "애플리케이션 연동",
+      "tasks": [
+        "데이터베이스 설정 변경",
+        "연결 테스트",
+        "기능 검증"
+      ],
+      "estimated_time": "1시간"
+    }
+  ],
+  "estimated_timeline": {
+    "total_estimated_time": "13시간",
+    "preparation": "2시간",
+    "data_migration": "8시간",
+    "optimization": "2시간",
+    "testing": "1시간",
+    "recommended_schedule": "Weekend deployment"
+  }
+}
