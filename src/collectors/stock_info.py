@@ -41,8 +41,7 @@ class StockInfoCollector:
         """초기화 설정"""
         try:
             # 데이터베이스 서비스 초기화
-            db_manager = get_database_manager()
-            self.db_service = DatabaseService(db_manager)
+            self.db_service = get_database_service()  # ← 이렇게 수정
 
             logger.info("주식정보 수집기 초기화 완료")
         except Exception as e:
