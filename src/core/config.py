@@ -29,14 +29,22 @@ class Config:
         self.debug = os.getenv("DEBUG", "True").lower() == "true"
         self.log_level = os.getenv("LOG_LEVEL", "INFO")
 
-        # 데이터베이스 설정
-        self.db_type = os.getenv("DB_TYPE", "sqlite")
+        # 데이터베이스 설정 (MySQL 기본)
+        self.db_type = os.getenv("DB_TYPE", "mysql")
         self.db_host = os.getenv("DB_HOST", "localhost")
-        self.db_port = int(os.getenv("DB_PORT", "5432"))
+        self.db_port = int(os.getenv("DB_PORT", "3306"))
         self.db_name = os.getenv("DB_NAME", "stock_trading_db")
-        self.db_user = os.getenv("DB_USER", "")
-        self.db_password = os.getenv("DB_PASSWORD", "")
+        self.db_user = os.getenv("DB_USER", "stock_user")
+        self.db_password = os.getenv("DB_PASSWORD", "StockPass2025!")
         self.sqlite_db_path = os.getenv("SQLITE_DB_PATH", "./data/stock_data.db")
+
+        # MySQL 다중 스키마 설정
+        self.mysql_schemas = {
+            'main': os.getenv("MYSQL_MAIN_SCHEMA", "stock_trading_db"),
+            'daily': os.getenv("MYSQL_DAILY_SCHEMA", "daily_prices_db"),
+            'supply': os.getenv("MYSQL_SUPPLY_SCHEMA", "supply_demand_db"),
+            'minute': os.getenv("MYSQL_MINUTE_SCHEMA", "minute_data_db")
+        }
 
         # 키움 API 설정
         self.kiwoom_user_id = os.getenv("KIWOOM_USER_ID", "")
@@ -90,6 +98,23 @@ class Config:
 
         else:
             raise ValueError(f"Unsupported database type: {self.db_type}")
+
+    def get_mysql_config(self, schema_key: str = 'main') -> Dict[str, Any]:
+        """MySQL 연결 설정 반환"""
+        if self.db_type != 'mysql':
+            raise ValueError("MySQL 설정은 DB_TYPE이 mysql일 때만 사용 가능합니다")
+
+        schema_name = self.mysql_schemas.get(schema_key, self.db_name)
+
+        return {
+            'host': self.db_host,
+            'port': self.db_port,
+            'database': schema_name,
+            'user': self.db_user,
+            'password': self.db_password,
+            'charset': 'utf8mb4',
+            'autocommit': False
+        }
 
     def get_active_database_config(self) -> Dict[str, Any]:
         """활성 데이터베이스 설정 반환"""

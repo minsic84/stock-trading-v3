@@ -239,69 +239,115 @@ class AllStocksCollector:
             self.db_service.update_collection_progress(stock_code, 'processing')
 
             # 대시보드 업데이트 (종목명은 수집 후 업데이트)
-            self.dashboard.update_current_stock(stock_code, "수집 중...")
+            if self.dashboard:
+                self.dashboard.update_current_stock(stock_code, "수집 중...")
 
             # 실제 수집 실행
             result = self.collector.collect_stock_with_daily_data(stock_code)
 
-            # IntegratedStockCollector 결과 구조에 맞춤
-            if result.get('stock_info_success', False) and result.get('daily_data_success', False):
-                # 완전 성공 처리
-                data_count = result.get('daily_records_collected', 0)
+            # 디버깅: 반환값 타입 확인
+            print(f"🔍 {stock_code} 반환값 타입: {type(result)}")
+            if isinstance(result, dict):
+                print(f"🔍 {stock_code} 반환값 내용: {list(result.keys())}")
+            elif isinstance(result, list):
+                print(f"🔍 {stock_code} 리스트 길이: {len(result)}")
+                if len(result) > 0:
+                    print(f"🔍 {stock_code} 첫 번째 항목 타입: {type(result[0])}")
+            else:
+                print(f"🔍 {stock_code} 반환값: {result}")
 
+            # 결과 타입에 따른 처리
+            if isinstance(result, dict):
+                # 딕셔너리인 경우 (정상 케이스)
+                stock_info_success = result.get('stock_info_success', False)
+                daily_data_success = result.get('daily_data_success', False)
+                data_count = result.get('daily_records_collected', 0)
+                error_msg = result.get('error', '')
+
+            elif isinstance(result, list):
+                # 리스트인 경우 (예상치 못한 케이스)
+                logger.error(f"{stock_code}: 예상치 못한 리스트 반환 - 길이: {len(result)}")
+                # 임시로 실패 처리
+                stock_info_success = False
+                daily_data_success = False
+                data_count = 0
+                error_msg = f'잘못된 반환 타입: list (길이: {len(result)})'
+
+            elif isinstance(result, bool):
+                # 부울인 경우 (간소화된 반환)
+                stock_info_success = result
+                daily_data_success = result
+                data_count = 1 if result else 0
+                error_msg = '' if result else '수집 실패'
+
+            else:
+                # 기타 타입인 경우
+                logger.error(f"{stock_code}: 알 수 없는 반환 타입 - {type(result)}")
+                stock_info_success = False
+                daily_data_success = False
+                data_count = 0
+                error_msg = f'알 수 없는 반환 타입: {type(result)}'
+
+            # 결과에 따른 진행상황 업데이트
+            if stock_info_success and daily_data_success:
+                # 완전 성공 처리
                 # 종목명은 DB에서 조회
-                from src.core.database import get_database_service
-                db_service_temp = get_database_service()
-                stock_info = db_service_temp.get_stock_info(stock_code)
-                stock_name = stock_info.get('name', '') if stock_info else ''
+                try:
+                    stock_info = self.db_service.get_stock_info(stock_code)
+                    stock_name = stock_info.get('name', '') if stock_info else ''
+                except:
+                    stock_name = ''
 
                 self.db_service.update_collection_progress(
                     stock_code, 'completed',
-                    stock_name=stock_name,
                     data_count=data_count
                 )
 
-                self.dashboard.increment_completed()
+                if self.dashboard:
+                    self.dashboard.increment_completed()
 
                 logger.info(f"✅ {stock_code} ({stock_name}) 수집 완료: {data_count}개 데이터")
 
-            elif result.get('stock_info_success', False) or result.get('daily_data_success', False):
+            elif stock_info_success or daily_data_success:
                 # 부분 성공 처리 (완료로 간주)
-                data_count = result.get('daily_records_collected', 0)
-
                 self.db_service.update_collection_progress(
                     stock_code, 'completed',
-                    stock_name='',
                     data_count=data_count
                 )
 
-                self.dashboard.increment_completed()
+                if self.dashboard:
+                    self.dashboard.increment_completed()
 
                 logger.info(f"⚠️ {stock_code} 부분 수집 완료: {data_count}개 데이터")
 
             else:
                 # 실패 처리
-                error_msg = result.get('error', '알 수 없는 오류')
                 self.db_service.update_collection_progress(
                     stock_code, 'failed',
                     error_message=error_msg
                 )
 
-                self.dashboard.increment_failed()
+                if self.dashboard:
+                    self.dashboard.increment_failed()
 
                 logger.warning(f"❌ {stock_code} 수집 실패: {error_msg}")
 
         except Exception as e:
             # 예외 처리
-            self.db_service.update_collection_progress(
-                stock_code, 'failed',
-                error_message=str(e)
-            )
-
-            self.dashboard.increment_failed()
-
             logger.error(f"❌ {stock_code} 수집 중 예외: {e}")
 
+            try:
+                self.db_service.update_collection_progress(
+                    stock_code, 'failed',
+                    error_message=str(e)
+                )
+
+                if self.dashboard:
+                    self.dashboard.increment_failed()
+            except Exception as update_error:
+                logger.error(f"❌ {stock_code} 진행상황 업데이트 실패: {update_error}")
+
+            # 예외를 다시 발생시키지 않고 계속 진행
     def _retry_failed_stocks(self):
         """실패한 종목 재시도"""
         max_attempts = 3

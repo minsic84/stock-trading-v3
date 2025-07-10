@@ -37,9 +37,9 @@ class DailyPriceCollector:
     def _setup(self):
         """초기화 설정"""
         try:
-            # 데이터베이스 서비스 초기화
-            db_manager = get_database_manager()
-            self.db_service = DatabaseService(db_manager)
+            # 데이터베이스 서비스 초기화 (stock_info.py와 동일하게 수정)
+            from ..core.database import get_database_service
+            self.db_service = get_database_service()  # ← 이렇게 수정
 
             logger.info("일봉 데이터 수집기 초기화 완료")
         except Exception as e:
@@ -172,49 +172,97 @@ class DailyPriceCollector:
             return False
 
     def _save_daily_data_to_table(self, stock_code: str, daily_data: List[Dict[str, Any]]) -> int:
-        """종목별 테이블에 일봉 데이터 저장"""
+        """종목별 테이블에 일봉 데이터 저장 (MySQL 방식)"""
         saved_count = 0
-        table_name = f"daily_prices_{stock_code}"
 
         try:
-            from sqlalchemy import text
+            # MySQL daily_prices_db 스키마에 직접 저장
+            conn = self.db_service._get_connection('daily')
+            cursor = conn.cursor()
 
-            with self.db_service.db_manager.get_session() as session:
-                for data in daily_data:
-                    try:
-                        # INSERT OR REPLACE 쿼리
-                        insert_sql = f"""
-                        INSERT OR REPLACE INTO {table_name} 
-                        (date, open_price, high_price, low_price, close_price, 
-                         volume, trading_value, prev_day_diff, change_rate, data_source, created_at)
-                        VALUES 
-                        (:date, :open_price, :high_price, :low_price, :close_price,
-                         :volume, :trading_value, :prev_day_diff, :change_rate, :data_source, :created_at)
-                        """
+            table_name = f"daily_prices_{stock_code}"
 
-                        # 데이터 준비
-                        insert_data = {
-                            'date': data['date'],
-                            'open_price': data['start_price'],
-                            'high_price': data['high_price'],
-                            'low_price': data['low_price'],
-                            'close_price': data['current_price'],
-                            'volume': data['volume'],
-                            'trading_value': data['trading_value'],
-                            'prev_day_diff': data['prev_day_diff'],
-                            'change_rate': data['change_rate'],
-                            'data_source': 'OPT10081',
-                            'created_at': datetime.now()
-                        }
+            # 테이블 존재 확인 및 생성
+            cursor.execute(f"SHOW TABLES LIKE '{table_name}'")
+            if not cursor.fetchone():
+                # 테이블 생성
+                create_sql = f"""
+                CREATE TABLE {table_name} (
+                    id INT PRIMARY KEY AUTO_INCREMENT,
+                    date VARCHAR(8) NOT NULL COMMENT '일자(YYYYMMDD)',
+                    open_price INT COMMENT '시가',
+                    high_price INT COMMENT '고가', 
+                    low_price INT COMMENT '저가',
+                    close_price INT COMMENT '종가/현재가',
+                    volume BIGINT COMMENT '거래량',
+                    trading_value BIGINT COMMENT '거래대금',
+                    prev_day_diff INT DEFAULT 0 COMMENT '전일대비',
+                    change_rate INT DEFAULT 0 COMMENT '등락율(소수점2자리*100)',
+                    data_source VARCHAR(20) DEFAULT 'OPT10081' COMMENT '데이터 출처',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '생성일시',
 
-                        session.execute(text(insert_sql), insert_data)
-                        saved_count += 1
+                    UNIQUE KEY idx_date (date),
+                    INDEX idx_close_price (close_price),
+                    INDEX idx_volume (volume)
+                ) ENGINE=InnoDB 
+                CHARACTER SET utf8mb4 
+                COLLATE utf8mb4_unicode_ci
+                COMMENT='{stock_code} 종목 일봉 데이터'
+                """
+                cursor.execute(create_sql)
 
-                    except Exception as e:
-                        logger.warning(f"{stock_code} 데이터 저장 실패: {data['date']} - {e}")
-                        continue
+            # 데이터 삽입 (MySQL INSERT ... ON DUPLICATE KEY UPDATE)
+            insert_sql = f"""
+            INSERT INTO {table_name} (
+                date, open_price, high_price, low_price, close_price,
+                volume, trading_value, prev_day_diff, change_rate,
+                data_source, created_at
+            ) VALUES (
+                %(date)s, %(open_price)s, %(high_price)s, %(low_price)s, %(close_price)s,
+                %(volume)s, %(trading_value)s, %(prev_day_diff)s, %(change_rate)s,
+                %(data_source)s, %(created_at)s
+            ) ON DUPLICATE KEY UPDATE
+                open_price = VALUES(open_price),
+                high_price = VALUES(high_price),
+                low_price = VALUES(low_price),
+                close_price = VALUES(close_price),
+                volume = VALUES(volume),
+                trading_value = VALUES(trading_value),
+                prev_day_diff = VALUES(prev_day_diff),
+                change_rate = VALUES(change_rate),
+                data_source = VALUES(data_source),
+                created_at = VALUES(created_at)
+            """
 
-                session.commit()
+            for data in daily_data:
+                try:
+                    # 데이터 준비
+                    insert_data = {
+                        'date': data['date'],
+                        'open_price': data['start_price'],
+                        'high_price': data['high_price'],
+                        'low_price': data['low_price'],
+                        'close_price': data['current_price'],
+                        'volume': data['volume'],
+                        'trading_value': data['trading_value'],
+                        'prev_day_diff': data['prev_day_diff'],
+                        'change_rate': data['change_rate'],
+                        'data_source': 'OPT10081',
+                        'created_at': datetime.now()
+                    }
+
+                    cursor.execute(insert_sql, insert_data)
+                    saved_count += 1
+
+                except Exception as e:
+                    logger.warning(f"{stock_code} 데이터 저장 실패: {data['date']} - {e}")
+                    continue
+
+            conn.commit()
+            cursor.close()
+            conn.close()
+
+            logger.info(f"{stock_code} 일봉 데이터 저장 완료: {saved_count}개")
 
         except Exception as e:
             logger.error(f"{stock_code} 테이블 저장 중 오류: {e}")

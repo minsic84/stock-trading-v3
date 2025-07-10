@@ -38,6 +38,174 @@ class MySQLMultiSchemaService:
             'minute': 'minute_data_db'  # 향후 분봉 데이터
         }
 
+    def add_or_update_stock_info(self, stock_code: str, stock_data: Dict[str, Any]) -> bool:
+        """종목 기본정보 추가 또는 업데이트"""
+        try:
+            conn = self._get_connection('main')
+            cursor = conn.cursor()
+
+            # stock_data에서 필요한 필드 추출 및 기본값 설정
+            data = {
+                'code': stock_code,
+                'name': stock_data.get('name', ''),
+                'market': stock_data.get('market', ''),
+                'current_price': stock_data.get('current_price', 0),
+                'prev_day_diff': stock_data.get('prev_day_diff', 0),
+                'change_rate': stock_data.get('change_rate', 0),
+                'volume': stock_data.get('volume', 0),
+                'open_price': stock_data.get('open_price', 0),
+                'high_price': stock_data.get('high_price', 0),
+                'low_price': stock_data.get('low_price', 0),
+                'upper_limit': stock_data.get('upper_limit', 0),
+                'lower_limit': stock_data.get('lower_limit', 0),
+                'market_cap': stock_data.get('market_cap', 0),
+                'market_cap_size': stock_data.get('market_cap_size', ''),
+                'listed_shares': stock_data.get('listed_shares', 0),
+                'per_ratio': stock_data.get('per_ratio', 0),
+                'pbr_ratio': stock_data.get('pbr_ratio', 0),
+                'data_source': stock_data.get('data_source', 'OPT10001'),
+                'last_updated': datetime.now(),
+                'is_active': stock_data.get('is_active', 1)
+            }
+
+            query = """
+                REPLACE INTO stocks (
+                    code, name, market, current_price, prev_day_diff, change_rate,
+                    volume, open_price, high_price, low_price, upper_limit, lower_limit,
+                    market_cap, market_cap_size, listed_shares, per_ratio, pbr_ratio,
+                    data_source, last_updated, is_active
+                ) VALUES (
+                    %(code)s, %(name)s, %(market)s, %(current_price)s, %(prev_day_diff)s, %(change_rate)s,
+                    %(volume)s, %(open_price)s, %(high_price)s, %(low_price)s, %(upper_limit)s, %(lower_limit)s,
+                    %(market_cap)s, %(market_cap_size)s, %(listed_shares)s, %(per_ratio)s, %(pbr_ratio)s,
+                    %(data_source)s, %(last_updated)s, %(is_active)s
+                )
+            """
+
+            cursor.execute(query, data)
+            conn.commit()
+            conn.close()
+
+            logger.info(f"종목 {stock_code} 정보 저장 성공")
+            return True
+
+        except Exception as e:
+            logger.error(f"종목 {stock_code} 정보 저장 실패: {e}")
+            return False
+
+    def add_daily_price(self, stock_code: str, date: str, current_price: int,
+                        volume: int = 0, trading_value: int = 0, start_price: int = 0,
+                        high_price: int = 0, low_price: int = 0, prev_day_diff: int = 0,
+                        change_rate: int = 0) -> bool:
+        """일봉 데이터 추가 (종목별 테이블에 저장)"""
+        try:
+            # 종목별 테이블 생성 (필요시)
+            table_name = f"daily_prices_{stock_code}"
+            if not self._ensure_daily_table_exists(stock_code):
+                return False
+
+            conn = self._get_connection('daily')
+            cursor = conn.cursor()
+
+            query = f"""
+                REPLACE INTO {table_name} (
+                    stock_code, date, open_price, high_price, low_price, close_price,
+                    volume, trading_value, prev_day_diff, change_rate
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+            """
+
+            cursor.execute(query, (
+                stock_code, date, start_price, high_price, low_price, current_price,
+                volume, trading_value, prev_day_diff, change_rate
+            ))
+
+            conn.commit()
+            conn.close()
+
+            return True
+
+        except Exception as e:
+            logger.error(f"일봉 데이터 저장 실패 ({stock_code}, {date}): {e}")
+            return False
+
+    def _ensure_daily_table_exists(self, stock_code: str) -> bool:
+        """종목별 일봉 테이블 존재 확인 및 생성"""
+        try:
+            table_name = f"daily_prices_{stock_code}"
+
+            conn = self._get_connection('daily')
+            cursor = conn.cursor()
+
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS {table_name} (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    stock_code VARCHAR(10) NOT NULL,
+                    date VARCHAR(8) NOT NULL,
+                    open_price INT DEFAULT 0,
+                    high_price INT DEFAULT 0,
+                    low_price INT DEFAULT 0,
+                    close_price INT DEFAULT 0,
+                    volume BIGINT DEFAULT 0,
+                    trading_value BIGINT DEFAULT 0,
+                    prev_day_diff INT DEFAULT 0,
+                    change_rate INT DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+                    UNIQUE KEY uk_stock_date (stock_code, date),
+                    INDEX idx_date (date),
+                    INDEX idx_close_price (close_price)
+                ) ENGINE=InnoDB COMMENT='종목별 일봉 데이터'
+            """)
+
+            conn.commit()
+            conn.close()
+
+            return True
+
+        except Exception as e:
+            logger.error(f"종목별 테이블 생성 실패 {stock_code}: {e}")
+            return False
+
+    def get_latest_daily_date(self, stock_code: str) -> str:
+        """종목의 최신 일봉 데이터 날짜 조회"""
+        try:
+            table_name = f"daily_prices_{stock_code}"
+
+            conn = self._get_connection('daily')
+            cursor = conn.cursor()
+
+            cursor.execute(f"SELECT MAX(date) FROM {table_name} WHERE stock_code = %s", (stock_code,))
+            result = cursor.fetchone()
+
+            conn.close()
+
+            return result[0] if result and result[0] else ""
+
+        except Exception as e:
+            logger.error(f"최신 날짜 조회 실패 {stock_code}: {e}")
+            return ""
+
+    def get_daily_data_count(self, stock_code: str) -> int:
+        """종목의 일봉 데이터 개수 조회"""
+        try:
+            table_name = f"daily_prices_{stock_code}"
+
+            conn = self._get_connection('daily')
+            cursor = conn.cursor()
+
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE stock_code = %s", (stock_code,))
+            result = cursor.fetchone()
+
+            conn.close()
+
+            return result[0] if result else 0
+
+        except Exception as e:
+            logger.error(f"데이터 개수 조회 실패 {stock_code}: {e}")
+            return 0
+
     def _get_connection(self, schema_key: str = 'main'):
         """스키마별 MySQL 연결 반환"""
         config = self.mysql_base_config.copy()

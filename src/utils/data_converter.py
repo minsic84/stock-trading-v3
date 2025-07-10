@@ -1,97 +1,79 @@
 """
-데이터 변환 유틸리티
+데이터 변환 유틸리티 (MySQL 다중 스키마 지원)
 - OPT10001 기본정보 → daily_prices 테이블 형태 변환
 - 당일 데이터 보완 로직
-- 종목별 일봉 테이블 자동 생성
+- 종목별 일봉 테이블 자동 생성 (MySQL)
 """
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
 import sys
 from pathlib import Path
-from sqlalchemy import text, Column, Integer, String, BigInteger, DateTime, Index, UniqueConstraint
 
 # 프로젝트 루트를 Python 경로에 추가
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.core.database import get_database_manager, Base
+from src.core.database import get_database_service
 from src.utils.trading_date import get_market_today
 
 logger = logging.getLogger(__name__)
 
 
-class StockDailyTable(Base):
-    """동적 종목별 일봉 테이블 모델"""
-    __abstract__ = True  # 추상 클래스로 설정
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    date = Column(String(8), nullable=False, comment='일자(YYYYMMDD)')
-
-    # 가격 정보
-    open_price = Column(Integer, comment='시가')
-    high_price = Column(Integer, comment='고가')
-    low_price = Column(Integer, comment='저가')
-    close_price = Column(Integer, comment='종가/현재가')
-
-    # 거래 정보
-    volume = Column(BigInteger, comment='거래량')
-    trading_value = Column(BigInteger, comment='거래대금')
-
-    # 변동 정보
-    prev_day_diff = Column(Integer, comment='전일대비', default=0)
-    change_rate = Column(Integer, comment='등락율(소수점2자리*100)', default=0)
-
-    # 메타 정보
-    data_source = Column(String(20), comment='데이터 출처 (OPT10001/OPT10081)')
-    created_at = Column(DateTime, default=datetime.now, comment='생성일시')
-
-
 class DataConverter:
-    """데이터 변환 및 테이블 관리 클래스"""
+    """데이터 변환 및 테이블 관리 클래스 (MySQL 지원)"""
 
     def __init__(self):
-        self.db_manager = get_database_manager()
+        self.db_service = get_database_service()
         logger.info("데이터 변환기 초기화 완료")
 
     def create_daily_table_for_stock(self, stock_code: str) -> bool:
-        """종목별 일봉 테이블 생성 (코드명만 사용)"""
+        """종목별 일봉 테이블 생성 (MySQL daily_prices_db 스키마에)"""
         try:
             table_name = f"daily_prices_{stock_code}"
 
-            # 이미 존재하는지 확인
-            if self._table_exists(table_name):
+            # MySQL daily_prices_db 스키마에 테이블 생성
+            conn = self.db_service._get_connection('daily')
+            cursor = conn.cursor()
+
+            # 테이블 존재 여부 확인
+            cursor.execute("SHOW TABLES LIKE %s", (table_name,))
+            if cursor.fetchone():
                 logger.info(f"{stock_code}: 테이블 {table_name} 이미 존재")
+                cursor.close()
+                conn.close()
                 return True
 
-            # 동적 테이블 생성 SQL
+            # 종목별 일봉 테이블 생성 SQL
             create_sql = f"""
             CREATE TABLE {table_name} (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date TEXT(8) NOT NULL,
-                open_price INTEGER,
-                high_price INTEGER,
-                low_price INTEGER,
-                close_price INTEGER,
-                volume BIGINT,
-                trading_value BIGINT,
-                prev_day_diff INTEGER DEFAULT 0,
-                change_rate INTEGER DEFAULT 0,
-                data_source TEXT(20),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                date VARCHAR(8) NOT NULL COMMENT '일자(YYYYMMDD)',
+                open_price INT COMMENT '시가',
+                high_price INT COMMENT '고가', 
+                low_price INT COMMENT '저가',
+                close_price INT COMMENT '종가/현재가',
+                volume BIGINT COMMENT '거래량',
+                trading_value BIGINT COMMENT '거래대금',
+                prev_day_diff INT DEFAULT 0 COMMENT '전일대비',
+                change_rate INT DEFAULT 0 COMMENT '등락율(소수점2자리*100)',
+                data_source VARCHAR(20) COMMENT '데이터 출처 (OPT10001/OPT10081)',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '생성일시',
+                
+                UNIQUE KEY idx_date (date),
+                INDEX idx_close_price (close_price),
+                INDEX idx_volume (volume),
+                INDEX idx_created_at (created_at)
+            ) ENGINE=InnoDB 
+            CHARACTER SET utf8mb4 
+            COLLATE utf8mb4_unicode_ci
+            COMMENT='{stock_code} 종목 일봉 데이터'
             """
 
-            # 인덱스 생성 SQL
-            index_sql = f"""
-            CREATE UNIQUE INDEX idx_{table_name}_date ON {table_name}(date)
-            """
-
-            with self.db_manager.get_session() as session:
-                # 테이블 생성
-                session.execute(text(create_sql))
-                session.execute(text(index_sql))
-                session.commit()
+            cursor.execute(create_sql)
+            conn.commit()
+            cursor.close()
+            conn.close()
 
             logger.info(f"{stock_code}: 일봉 테이블 {table_name} 생성 완료")
             return True
@@ -143,48 +125,28 @@ class DataConverter:
             logger.error(f"{stock_code}: 데이터 변환 중 오류 - {e}")
             return False
 
-    def _table_exists(self, table_name: str) -> bool:
-        """테이블 존재 여부 확인"""
-        try:
-            with self.db_manager.get_session() as session:
-                result = session.execute(
-                    text("SELECT name FROM sqlite_master WHERE type='table' AND name=:table_name"),
-                    {"table_name": table_name}
-                ).fetchone()
-                return result is not None
-
-        except Exception as e:
-            logger.error(f"테이블 존재 확인 실패: {e}")
-            return False
-
     def _get_stock_basic_info(self, stock_code: str) -> Optional[Dict[str, Any]]:
-        """stocks 테이블에서 기본정보 조회"""
+        """stocks 테이블에서 기본정보 조회 (MySQL main 스키마에서)"""
         try:
-            from src.core.database import Stock
+            conn = self.db_service._get_connection('main')
+            cursor = conn.cursor(dictionary=True)
 
-            with self.db_manager.get_session() as session:
-                stock = session.query(Stock).filter(Stock.code == stock_code).first()
+            cursor.execute("""
+                SELECT code, name, current_price, prev_day_diff, change_rate,
+                       volume, open_price, high_price, low_price
+                FROM stocks 
+                WHERE code = %s
+            """, (stock_code,))
 
-                if not stock:
-                    logger.error(f"{stock_code}: stocks 테이블에 데이터 없음")
-                    return None
+            result = cursor.fetchone()
+            cursor.close()
+            conn.close()
 
-                # 필요한 필드들 추출
-                stock_data = {
-                    'code': stock.code,
-                    'name': stock.name,
-                    'current_price': stock.current_price,
-                    'prev_day_diff': stock.prev_day_diff,
-                    'change_rate': stock.change_rate,
-                    'volume': stock.volume,
-                    'open_price': stock.open_price,
-                    'high_price': stock.high_price,
-                    'low_price': stock.low_price,
-                    'last_updated': stock.last_updated
-                }
+            if not result:
+                logger.error(f"{stock_code}: stocks 테이블에 데이터 없음")
+                return None
 
-                logger.debug(f"{stock_code}: 기본정보 조회 완료 - 현재가: {stock.current_price}")
-                return stock_data
+            return result
 
         except Exception as e:
             logger.error(f"{stock_code}: 기본정보 조회 실패 - {e}")
@@ -193,30 +155,26 @@ class DataConverter:
     def _convert_to_daily_format(self, stock_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """기본정보를 일봉 형태로 변환"""
         try:
-            # 시장 기준 오늘 날짜
+            # 오늘 날짜 (YYYYMMDD 형태)
             today = get_market_today()
-            today_str = today.strftime('%Y%m%d')
+            date_str = today.strftime('%Y%m%d')
 
-            # 기본정보 → 일봉 매핑
+            # 일봉 데이터 형태로 변환
             daily_data = {
-                'date': today_str,
+                'date': date_str,
                 'open_price': stock_info.get('open_price', 0),
                 'high_price': stock_info.get('high_price', 0),
                 'low_price': stock_info.get('low_price', 0),
-                'close_price': stock_info.get('current_price', 0),  # 현재가 → 종가
+                'close_price': stock_info.get('current_price', 0),  # 현재가를 종가로
                 'volume': stock_info.get('volume', 0),
-                'trading_value': 0,  # 기본정보에는 거래대금 없음
+                'trading_value': 0,  # 거래대금은 기본정보에 없음
                 'prev_day_diff': stock_info.get('prev_day_diff', 0),
                 'change_rate': stock_info.get('change_rate', 0),
-                'data_source': 'OPT10001'
+                'data_source': 'OPT10001',
+                'created_at': datetime.now()
             }
 
-            # 데이터 유효성 검증
-            if daily_data['close_price'] <= 0:
-                logger.warning(f"현재가가 0 이하: {daily_data['close_price']}")
-                return None
-
-            logger.debug(f"일봉 변환 완료: {today_str} - {daily_data['close_price']:,}원")
+            logger.info(f"일봉 변환 완료: {date_str} - {daily_data['close_price']:,}원")
             return daily_data
 
         except Exception as e:
@@ -224,26 +182,38 @@ class DataConverter:
             return None
 
     def _save_daily_data(self, stock_code: str, daily_data: Dict[str, Any]) -> bool:
-        """일봉 데이터를 종목별 테이블에 저장"""
+        """일봉 데이터를 종목별 테이블에 저장 (MySQL daily_prices_db 스키마에)"""
         try:
             table_name = f"daily_prices_{stock_code}"
 
-            # INSERT OR REPLACE 쿼리 (중복 날짜 처리)
+            conn = self.db_service._get_connection('daily')
+            cursor = conn.cursor()
+
+            # INSERT ... ON DUPLICATE KEY UPDATE 쿼리 (MySQL 문법)
             insert_sql = f"""
-            INSERT OR REPLACE INTO {table_name} 
+            INSERT INTO {table_name} 
             (date, open_price, high_price, low_price, close_price, 
              volume, trading_value, prev_day_diff, change_rate, data_source, created_at)
             VALUES 
-            (:date, :open_price, :high_price, :low_price, :close_price,
-             :volume, :trading_value, :prev_day_diff, :change_rate, :data_source, :created_at)
+            (%(date)s, %(open_price)s, %(high_price)s, %(low_price)s, %(close_price)s,
+             %(volume)s, %(trading_value)s, %(prev_day_diff)s, %(change_rate)s, %(data_source)s, %(created_at)s)
+            ON DUPLICATE KEY UPDATE
+                open_price = VALUES(open_price),
+                high_price = VALUES(high_price),
+                low_price = VALUES(low_price),
+                close_price = VALUES(close_price),
+                volume = VALUES(volume),
+                trading_value = VALUES(trading_value),
+                prev_day_diff = VALUES(prev_day_diff),
+                change_rate = VALUES(change_rate),
+                data_source = VALUES(data_source),
+                created_at = VALUES(created_at)
             """
 
-            # 현재 시간 추가
-            daily_data['created_at'] = datetime.now()
-
-            with self.db_manager.get_session() as session:
-                session.execute(text(insert_sql), daily_data)
-                session.commit()
+            cursor.execute(insert_sql, daily_data)
+            conn.commit()
+            cursor.close()
+            conn.close()
 
             logger.info(f"{stock_code}: 일봉 데이터 저장 완료 - {daily_data['date']}")
             return True

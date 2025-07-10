@@ -8,6 +8,9 @@ PyQt5==5.15.10
 SQLAlchemy==2.0.23
 psycopg2-binary>=2.9.0
 
+# MySQL 드라이버 추가
+mysql-connector-python>=8.0.0
+
 # Configuration and logging
 python-dotenv>=1.0.0
 PyYAML>=6.0.0
@@ -31,3 +34,6 @@ pytest>=7.4.0
 
 # Console Dashboard
 rich>=13.0.0
+
+# 스케줄링 (일일 업데이트용)
+schedule>=1.2.0

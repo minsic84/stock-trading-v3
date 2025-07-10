@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 import time
 
 from ..core.config import Config
-from ..core.database import DatabaseService, get_database_manager
+from ..core.database import DatabaseService, get_database_manager, get_database_service
 from ..api.base_session import KiwoomSession
 from ..api.tr_codes import get_tr_info, create_opt10001_input, validate_input_data
 

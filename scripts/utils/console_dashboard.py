@@ -1,253 +1,177 @@
 #!/usr/bin/env python3
 """
 콘솔 대시보드 모듈
-실시간 수집 진행상황을 터미널에 표시
+전체 종목 수집 진행 상황을 실시간으로 표시
 """
-import time
 import threading
+import time
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List
 from rich.console import Console
 from rich.table import Table
-from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
-from rich.layout import Layout
 from rich.panel import Panel
+from rich.progress import Progress, TaskID
 from rich.live import Live
-from rich.text import Text
 
 
 class CollectionDashboard:
-    """전체 수집 진행상황 콘솔 대시보드"""
+    """전체 종목 수집 대시보드"""
 
     def __init__(self, total_stocks: int):
-        self.console = Console()
         self.total_stocks = total_stocks
-        self.start_time = datetime.now()
-
-        # 통계 데이터
+        self.completed_stocks = 0
+        self.failed_stocks = 0
         self.current_stock = ""
         self.current_stock_name = ""
-        self.completed_count = 0
-        self.failed_count = 0
-        self.processed_count = 0
 
-        # 실시간 업데이트용
+        # 통계
+        self.start_time = datetime.now()
+        self.last_update = datetime.now()
+
+        # Rich 컴포넌트
+        self.console = Console()
+        self.live = None
         self.is_running = False
-        self.live_display = None
-        self.update_thread = None
 
     def start(self):
         """대시보드 시작"""
         self.is_running = True
-        self.live_display = Live(
-            self._create_layout(),
-            console=self.console,
-            refresh_per_second=2,
-            screen=False
-        )
-        self.live_display.start()
+        self.start_time = datetime.now()
+
+        # 별도 스레드에서 대시보드 실행
+        dashboard_thread = threading.Thread(target=self._run_dashboard, daemon=True)
+        dashboard_thread.start()
 
     def stop(self):
-        """대시보드 종료"""
+        """대시보드 중지"""
         self.is_running = False
-        if self.live_display:
-            self.live_display.stop()
+        if self.live:
+            self.live.stop()
 
-    def update_current_stock(self, stock_code: str, stock_name: str):
+    def update_completed(self, completed: int):
+        """완료 수 업데이트"""
+        self.completed_stocks = completed
+        self.last_update = datetime.now()
+
+    def increment_completed(self):
+        """완료 수 증가"""
+        self.completed_stocks += 1
+        self.last_update = datetime.now()
+
+    def increment_failed(self):
+        """실패 수 증가"""
+        self.failed_stocks += 1
+        self.last_update = datetime.now()
+
+    def update_current_stock(self, stock_code: str, stock_name: str = ""):
         """현재 처리 중인 종목 업데이트"""
         self.current_stock = stock_code
         self.current_stock_name = stock_name
-        self._refresh_display()
+        self.last_update = datetime.now()
 
-    def update_completed(self, count: int):
-        """완료된 종목 수 업데이트"""
-        self.completed_count = count
-        self.processed_count = self.completed_count + self.failed_count
-        self._refresh_display()
+    def _run_dashboard(self):
+        """대시보드 실행 (별도 스레드)"""
+        try:
+            with Live(self._generate_layout(), refresh_per_second=1) as live:
+                self.live = live
+                while self.is_running:
+                    live.update(self._generate_layout())
+                    time.sleep(1)
+        except Exception as e:
+            print(f"대시보드 실행 오류: {e}")
 
-    def update_failed(self, count: int):
-        """실패한 종목 수 업데이트"""
-        self.failed_count = count
-        self.processed_count = self.completed_count + self.failed_count
-        self._refresh_display()
-
-    def increment_completed(self):
-        """완료 카운트 증가"""
-        self.completed_count += 1
-        self.processed_count = self.completed_count + self.failed_count
-        self._refresh_display()
-
-    def increment_failed(self):
-        """실패 카운트 증가"""
-        self.failed_count += 1
-        self.processed_count = self.completed_count + self.failed_count
-        self._refresh_display()
-
-    def _refresh_display(self):
-        """화면 새로고침"""
-        if self.live_display and self.is_running:
-            self.live_display.update(self._create_layout())
-
-    def _create_layout(self) -> Layout:
-        """레이아웃 생성"""
-        layout = Layout()
-
-        # 상단: 전체 진행률
-        layout.split_column(
-            Layout(self._create_progress_panel(), name="progress", size=8),
-            Layout(self._create_stats_panel(), name="stats", size=10),
-            Layout(self._create_current_panel(), name="current", size=5)
-        )
-
-        return layout
-
-    def _create_progress_panel(self) -> Panel:
-        """진행률 패널 생성"""
+    def _generate_layout(self):
+        """대시보드 레이아웃 생성"""
         # 진행률 계산
-        progress_percentage = (self.processed_count / self.total_stocks * 100) if self.total_stocks > 0 else 0
-
-        # 진행률 바 생성
-        bar_width = 50
-        filled_width = int(bar_width * progress_percentage / 100)
-        progress_bar = "█" * filled_width + "░" * (bar_width - filled_width)
+        progress_percent = (self.completed_stocks / self.total_stocks * 100) if self.total_stocks > 0 else 0
+        remaining = self.total_stocks - self.completed_stocks - self.failed_stocks
 
         # 시간 계산
-        elapsed_time = datetime.now() - self.start_time
-        elapsed_str = str(elapsed_time).split('.')[0]  # 마이크로초 제거
+        elapsed = datetime.now() - self.start_time
+        elapsed_str = str(elapsed).split('.')[0]  # 초 단위 제거
 
-        # 예상 남은 시간 계산
-        if self.processed_count > 0:
-            avg_time_per_stock = elapsed_time.total_seconds() / self.processed_count
-            remaining_stocks = self.total_stocks - self.processed_count
-            remaining_seconds = remaining_stocks * avg_time_per_stock
-            remaining_time = timedelta(seconds=int(remaining_seconds))
-            remaining_str = str(remaining_time)
+        # 예상 완료 시간
+        if self.completed_stocks > 0:
+            avg_time_per_stock = elapsed.total_seconds() / self.completed_stocks
+            remaining_time = timedelta(seconds=int(avg_time_per_stock * remaining))
+            eta_str = str(remaining_time).split('.')[0]
         else:
-            remaining_str = "계산 중..."
+            eta_str = "계산 중..."
 
-        progress_text = f"""
-📊 전체 진행률: {self.processed_count:,}/{self.total_stocks:,} ({progress_percentage:.1f}%)
+        # 메인 테이블
+        table = Table(title="📊 전체 종목 데이터 수집 현황")
+        table.add_column("항목", style="cyan", no_wrap=True)
+        table.add_column("값", style="magenta")
+        table.add_column("비율", style="green")
 
-{progress_bar}
+        table.add_row("📈 전체 종목", f"{self.total_stocks:,}개", "100.0%")
+        table.add_row("✅ 완료", f"{self.completed_stocks:,}개", f"{progress_percent:.1f}%")
+        table.add_row("❌ 실패", f"{self.failed_stocks:,}개", f"{(self.failed_stocks / self.total_stocks * 100):.1f}%")
+        table.add_row("⏳ 남은 종목", f"{remaining:,}개", f"{(remaining / self.total_stocks * 100):.1f}%")
+        table.add_row("", "", "")
+        table.add_row("⏱️ 경과 시간", elapsed_str, "")
+        table.add_row("🎯 예상 완료", eta_str, "")
+        table.add_row("📊 현재 종목", f"{self.current_stock}", "")
+        table.add_row("📋 종목명", f"{self.current_stock_name}", "")
 
-⏱️  소요시간: {elapsed_str}
-⏳ 예상 남은시간: {remaining_str}
-"""
+        # 진행률 바
+        progress_bar = "█" * int(progress_percent / 2) + "░" * (50 - int(progress_percent / 2))
+        progress_text = f"[{progress_bar}] {progress_percent:.1f}%"
 
         return Panel(
-            progress_text.strip(),
-            title="🚀 전체 수집 진행률",
+            f"{table}\n\n{progress_text}",
+            title="🚀 주식 데이터 수집 시스템",
             border_style="blue"
         )
 
-    def _create_stats_panel(self) -> Panel:
-        """통계 패널 생성"""
-        success_rate = (self.completed_count / self.processed_count * 100) if self.processed_count > 0 else 0
+    def show_retry_info(self, failed_stocks: List[Dict], retry_round: int):
+        """재시도 정보 표시"""
+        retry_table = Table(title=f"🔄 {retry_round}차 재시도")
+        retry_table.add_column("종목코드", style="yellow")
+        retry_table.add_column("시도 횟수", style="red")
+        retry_table.add_column("오류 메시지", style="white")
 
-        # 처리 속도 계산
-        elapsed_seconds = (datetime.now() - self.start_time).total_seconds()
-        processing_speed = self.processed_count / (elapsed_seconds / 60) if elapsed_seconds > 0 else 0
+        for stock in failed_stocks[:10]:  # 최대 10개만 표시
+            retry_table.add_row(
+                stock.get('stock_code', ''),
+                str(stock.get('attempt_count', 0)),
+                stock.get('error_message', '')[:50] + "..." if len(stock.get('error_message', '')) > 50 else stock.get(
+                    'error_message', '')
+            )
 
-        stats_text = f"""
-✅ 성공: {self.completed_count:,}개
-❌ 실패: {self.failed_count:,}개
-📈 성공률: {success_rate:.1f}%
+        if len(failed_stocks) > 10:
+            retry_table.add_row("...", f"외 {len(failed_stocks) - 10}개", "")
 
-🚀 처리 속도: {processing_speed:.1f}개/분
-📊 남은 종목: {self.total_stocks - self.processed_count:,}개
-"""
-
-        return Panel(
-            stats_text.strip(),
-            title="📈 수집 통계",
-            border_style="green"
-        )
-
-    def _create_current_panel(self) -> Panel:
-        """현재 처리 상황 패널 생성"""
-        if self.current_stock:
-            current_text = f"🔄 현재 처리 중: {self.current_stock} ({self.current_stock_name})"
-        else:
-            current_text = "⏸️ 대기 중..."
-
-        return Panel(
-            current_text,
-            title="🔄 현재 상태",
-            border_style="yellow"
-        )
+        self.console.print(retry_table)
 
     def show_final_report(self, summary: Dict[str, Any]):
         """최종 리포트 표시"""
-        self.stop()
+        report_table = Table(title="🎉 수집 완료 리포트")
+        report_table.add_column("항목", style="cyan", no_wrap=True)
+        report_table.add_column("값", style="magenta")
+        report_table.add_column("비율", style="green")
 
-        # 최종 통계 테이블 생성
-        table = Table(title="🎉 전체 수집 완료 리포트")
-        table.add_column("항목", style="cyan", no_wrap=True)
-        table.add_column("수량", style="magenta")
-        table.add_column("비율", style="green")
+        total = summary.get('total_stocks', 0)
+        completed = summary.get('completed', 0)
+        failed = summary.get('status_breakdown', {}).get('failed', 0)
+        success_rate = summary.get('success_rate', 0)
 
-        total_time = datetime.now() - self.start_time
+        report_table.add_row("📊 총 종목", f"{total:,}개", "100.0%")
+        report_table.add_row("✅ 성공", f"{completed:,}개", f"{success_rate:.1f}%")
+        report_table.add_row("❌ 실패", f"{failed:,}개", f"{(100 - success_rate):.1f}%")
 
-        table.add_row("총 종목 수", f"{self.total_stocks:,}개", "100.0%")
-        table.add_row("성공", f"{self.completed_count:,}개", f"{self.completed_count / self.total_stocks * 100:.1f}%")
-        table.add_row("실패", f"{self.failed_count:,}개", f"{self.failed_count / self.total_stocks * 100:.1f}%")
-        table.add_row("총 소요시간", str(total_time).split('.')[0], "-")
+        # 경과시간 계산
+        elapsed = datetime.now() - self.start_time
+        elapsed_str = str(elapsed).split('.')[0]
+        report_table.add_row("⏱️ 총 소요시간", elapsed_str, "")
 
-        self.console.print("\n")
-        self.console.print(table)
+        # 시간당 처리량
+        if elapsed.total_seconds() > 0:
+            stocks_per_hour = completed / (elapsed.total_seconds() / 3600)
+            report_table.add_row("⚡ 시간당 처리", f"{stocks_per_hour:.1f}개/시간", "")
 
-        # HeidiSQL 확인 쿼리 출력
-        self.console.print("\n" + "=" * 60)
-        self.console.print("📊 HeidiSQL 확인 쿼리", style="bold blue")
-        self.console.print("=" * 60)
-
-        queries = [
-            "-- 전체 수집 현황",
-            "SELECT status, COUNT(*) as count FROM collection_progress GROUP BY status;",
-            "",
-            "-- 성공률 통계",
-            "SELECT ",
-            "    COUNT(*) as total,",
-            "    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as success,",
-            "    ROUND(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) as success_rate",
-            "FROM collection_progress;",
-            "",
-            "-- 실패한 종목들",
-            "SELECT stock_code, stock_name, attempt_count, error_message",
-            "FROM collection_progress",
-            "WHERE status = 'failed'",
-            "ORDER BY attempt_count DESC;",
-            "",
-            "-- 수집 데이터 확인",
-            "SELECT s.name, cp.data_count, cp.success_time",
-            "FROM collection_progress cp",
-            "JOIN stocks s ON cp.stock_code = s.code",
-            "WHERE cp.status = 'completed'",
-            "ORDER BY cp.data_count DESC",
-            "LIMIT 10;"
-        ]
-
-        for query in queries:
-            if query.startswith("--"):
-                self.console.print(query, style="bold yellow")
-            else:
-                self.console.print(query, style="white")
-
-        self.console.print("\n✅ 대시보드가 종료되었습니다.")
-
-    def show_retry_info(self, retry_stocks: list, retry_round: int):
-        """재시도 정보 표시"""
-        self.console.print(f"\n🔄 {retry_round}차 재시도 시작")
-        self.console.print(f"📊 재시도 대상: {len(retry_stocks)}개 종목")
-
-        if len(retry_stocks) <= 10:
-            for stock in retry_stocks:
-                self.console.print(
-                    f"   - {stock['stock_code']}: {stock['stock_name']} (시도: {stock['attempt_count']}/3)")
-        else:
-            for i, stock in enumerate(retry_stocks[:5]):
-                self.console.print(
-                    f"   - {stock['stock_code']}: {stock['stock_name']} (시도: {stock['attempt_count']}/3)")
-            self.console.print(f"   ... 외 {len(retry_stocks) - 5}개")
-
-        self.console.print("")
+        self.console.print(Panel(
+            report_table,
+            title="🎉 수집 완료!",
+            border_style="green"
+        ))
