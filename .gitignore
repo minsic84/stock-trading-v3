@@ -52,3 +52,37 @@ htmlcov/
 build/
 dist/
 *.egg-info/
+# ========================================
+# 개발 환경 추가 제외 항목
+# ========================================
+
+# VSCode 사용자 설정
+.vscode/settings.json.user
+
+# Python 가상환경들
+venv-*/
+env-*/
+
+# 개발용 임시 파일
+*.dev.py
+test_*.py
+debug_*.py
+
+# 성능 프로파일링 결과
+*.prof
+*.pstats
+
+# 메모리 프로파일링
+*.mprof
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb
+
+# 개발 데이터베이스
+*.dev.db
+*.test.db
+
+# 백업 파일들
+backup_*/
+archives/
