@@ -66,8 +66,36 @@ class DailyPriceCollector:
             logger.error(f"키움 API 연결 실패: {e}")
             return False
 
+    def _should_continue_for_target_date(self, target_date: str, daily_data: List[Dict]) -> bool:
+        """목표 날짜 기준으로 연속조회 여부 결정"""
+        try:
+            if not daily_data:
+                return True  # 데이터 없으면 계속
+
+            first_date = daily_data[0]['date']  # 최신 날짜
+            last_date = daily_data[-1]['date']  # 가장 과거 날짜
+
+            # 목표 날짜가 이번 배치에 포함되어 있으면 중단
+            if last_date <= target_date <= first_date:
+                logger.info(f"목표 날짜 {target_date}가 범위 내 포함: {last_date} ~ {first_date}")
+                return False
+
+            # 목표 날짜가 가장 과거보다 더 과거면 계속
+            if target_date < last_date:
+                logger.info(f"목표 날짜 {target_date}가 더 과거, 연속조회 필요")
+                return True
+
+            # 목표 날짜가 최신보다 미래면 중단 (이미 충분)
+            logger.info(f"목표 날짜 {target_date}가 범위보다 미래, 연속조회 불필요")
+            return False
+
+        except Exception as e:
+            logger.error(f"목표 날짜 체크 실패: {e}")
+            return True  # 오류 시 기존 로직 유지
+
     def collect_single_stock(self, stock_code: str, start_date: str = None,
-                             end_date: str = None, update_existing: bool = False) -> bool:
+                             end_date: str = None, update_existing: bool = False,
+                             target_date: str = None) -> bool:
         """단일 종목 일봉 데이터 수집"""
         try:
             print(f"=== {stock_code} 수집 시작 ===")
@@ -100,9 +128,10 @@ class DailyPriceCollector:
             market_today = get_market_today()
             base_date = market_today.strftime('%Y%m%d')
 
+            # input_data에서
             input_data = {
-                "종목코드": stock_code,
-                "기준일자": base_date,  # 오늘 날짜 또는 최근 거래일
+                "종목코드": f"{stock_code}_AL",  # API 요청시에만 _AL 추가
+                "기준일자": base_date,
                 "수정주가구분": "1"
             }
 
@@ -144,8 +173,16 @@ class DailyPriceCollector:
                 print(f"수집된 데이터: {len(daily_data)}개")
 
                 # 연속 조회 여부 확인
+                # 연속 조회 여부 확인
                 prev_next = response.get('prev_next', '0')
                 print(f"연속조회: {prev_next}")
+
+                # 목표 날짜가 설정된 경우 범위 체크
+                if target_date and daily_data:
+                    should_continue = self._should_continue_for_target_date(target_date, daily_data)
+                    if not should_continue:
+                        logger.info(f"{stock_code} 목표 날짜 {target_date} 수집 완료")
+                        break
 
                 if prev_next != '2':
                     logger.info(f"{stock_code} 모든 데이터 수집 완료")

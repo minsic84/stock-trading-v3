@@ -36,6 +36,7 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from src.collectors.daily_price import DailyPriceCollector
+from src.utils.trading_date import get_market_today
 
 # 로깅 설정
 logging.basicConfig(
@@ -160,11 +161,14 @@ class DateSpecificUpdater:
         self.collector = None
         self.console = Console()
 
-        # 대상 날짜 설정 (디폴트: 오늘)
+        # 대상 날짜 설정 (디폴트: 시장 기준 오늘)
         if target_date:
             self.target_date = self._validate_date(target_date)
         else:
-            self.target_date = datetime.now().strftime('%Y%m%d')
+            # 자정~오전9시: 전 영업일, 오전9시 이후: 오늘
+            market_today = get_market_today()
+            self.target_date = market_today.strftime('%Y%m%d')
+            logger.info(f"시장 기준 오늘 날짜 사용: {self.target_date}")
 
         # 업데이트 통계
         self.stats = {
@@ -176,6 +180,135 @@ class DateSpecificUpdater:
             'start_time': None,
             'end_time': None
         }
+
+    def _get_active_stock_codes(self, limit: int = None) -> List[str]:
+        """활성 종목 코드 리스트 조회 후 순수 6자리 숫자만 필터링"""
+        try:
+            with self.db_manager.get_stock_trading_connection() as conn:
+                cursor = conn.cursor()
+
+                # 전체 활성 종목 조회 (필터링 전)
+                query = """
+                SELECT code 
+                FROM stocks 
+                WHERE is_active = 1 
+                  AND market IN ('KOSPI', 'KOSDAQ')
+                ORDER BY market, code
+                """
+
+                cursor.execute(query)
+                results = cursor.fetchall()
+
+                # 코드만 추출
+                all_codes = [row[0] for row in results]
+
+                # 순수 6자리 숫자만 필터링
+                pure_six_digit_codes = []
+                for code in all_codes:
+                    if self._is_pure_six_digit(code):
+                        pure_six_digit_codes.append(code)
+
+                logger.info(f"전체 활성 종목: {len(all_codes)}개")
+                logger.info(f"순수 6자리 숫자: {len(pure_six_digit_codes)}개")
+
+                # 테스트 모드: 종목 수 제한
+                if limit and limit > 0:
+                    pure_six_digit_codes = pure_six_digit_codes[:limit]
+                    logger.info(f"테스트 모드: {len(pure_six_digit_codes)}개 종목으로 제한")
+
+                return pure_six_digit_codes
+
+        except Exception as e:
+            logger.error(f"활성 종목 조회 실패: {e}")
+            return []
+
+    def _is_pure_six_digit(self, code: str) -> bool:
+        """순수 6자리 숫자 여부 확인"""
+        if not code:
+            return False
+
+        # 정확히 6자리이고 모두 숫자인지 확인
+        if len(code) == 6 and code.isdigit():
+            # 추가 검증: 000000 같은 무효한 코드 제외
+            if code == "000000":
+                return False
+            return True
+
+        return False
+
+    def _analyze_single_stock(self, stock_code: str) -> Optional[UpdateTask]:
+        """개별 종목 분석 (메모리 효율적)"""
+        try:
+            # 종목 정보 조회
+            with self.db_manager.get_stock_trading_connection() as conn:
+                cursor = conn.cursor(dictionary=True)
+
+                query = """
+                SELECT code, name, market 
+                FROM stocks 
+                WHERE code = %s AND is_active = 1
+                """
+
+                cursor.execute(query, (stock_code,))
+                stock = cursor.fetchone()
+
+                if not stock:
+                    logger.warning(f"[{stock_code}] 활성 종목이 아님")
+                    return None
+
+            # 해당 날짜 데이터 존재 여부 확인
+            existing_data = self._check_existing_data(stock_code, self.target_date)
+
+            # 마지막 수집 날짜 확인
+            last_date = self._get_last_collection_date(stock_code)
+
+            if existing_data:
+                action = 'UPDATE'
+            else:
+                action = 'INSERT'
+
+            return UpdateTask(
+                stock_code=stock_code,
+                stock_name=stock['name'],
+                target_date=self.target_date,
+                action=action,
+                market=stock['market'],
+                existing_data=existing_data,
+                last_date=last_date
+            )
+
+        except Exception as e:
+            logger.error(f"[{stock_code}] 개별 분석 실패: {e}")
+            return None
+
+    def _extract_target_date_data(self, stock_code: str, target_date: str) -> Optional[Dict[str, Any]]:
+        """DB에서 특정 날짜 데이터 추출 (API 수집 후)"""
+        try:
+            table_name = StockCodeManager.get_table_name(stock_code)
+
+            with self.db_manager.get_daily_prices_connection() as conn:
+                cursor = conn.cursor(dictionary=True)
+
+                # 특정 날짜 데이터 조회
+                query = f"""
+                SELECT date, open_price, high_price, low_price, close_price, volume, trading_value
+                FROM {table_name} 
+                WHERE date = %s
+                """
+
+                cursor.execute(query, (target_date,))
+                result = cursor.fetchone()
+
+                if result:
+                    logger.info(f"[{stock_code}] {target_date} 데이터 추출 성공")
+                    return result
+                else:
+                    logger.warning(f"[{stock_code}] {target_date} 데이터 없음 (휴장일 가능성)")
+                    return None
+
+        except Exception as e:
+            logger.error(f"[{stock_code}] 데이터 추출 실패: {e}")
+            return None
 
     def _validate_date(self, date_str: str) -> str:
         """날짜 형식 검증 및 변환"""
@@ -208,8 +341,8 @@ class DateSpecificUpdater:
             else:
                 logger.info("키움 API 연결 대기 중...")
 
-            # 일봉 수집기 초기화 (날짜 지정용)
             self.daily_collector = DailyPriceCollector(self.config)
+            self.daily_collector.connect_kiwoom()
 
             logger.info("서비스 초기화 완료")
             return True
@@ -218,7 +351,7 @@ class DateSpecificUpdater:
             logger.error(f"서비스 초기화 실패: {e}")
             return False
 
-    def analyze_update_tasks(self, stock_codes: List[str] = None) -> List[UpdateTask]:
+    def analyze_update_tasks(self, stock_codes: List[str] = None, limit: int = None) -> List[UpdateTask]:
         """업데이트 작업 분석 (개선된 버전)"""
         logger.info(f"날짜 {self.target_date} 업데이트 작업 분석 중...")
 
@@ -252,15 +385,22 @@ class DateSpecificUpdater:
                     cursor.execute(query, normalized_codes)
                     stocks = cursor.fetchall()
                 else:
-                    # 전체 활성 종목 (숫자 6자리만)
+                    # 코스피 + 코스닥, 6자리 숫자만 (더 명확한 조건)
                     query = """
                     SELECT code, name, market 
                     FROM stocks 
-                    WHERE is_active = 1 AND code REGEXP '^[0-9]{6}$'
+                    WHERE is_active = 1 
+                      AND code REGEXP '^[0-9]{6}$'
+                      AND market IN ('KOSPI', 'KOSDAQ')
+                      AND LENGTH(code) = 6
                     ORDER BY market, code
                     """
                     cursor.execute(query)
                     stocks = cursor.fetchall()
+
+            if limit and limit > 0:
+                stocks = stocks[:limit]
+                logger.info(f"테스트 모드: {len(stocks)}개 종목으로 제한")
 
             tasks = []
 
@@ -381,23 +521,31 @@ class DateSpecificUpdater:
 
             logger.info(f"[{stock_code}] {stock_name} 업데이트: {target_date} (API: {api_code})")
 
-            # 데이터 수집 (API는 _AL 형식으로 요청)
+            # 데이터 수집 (DB용 코드로 전달)
             result = self.daily_collector.collect_single_stock(
-                stock_code=api_code,
+                stock_code=stock_code,
                 start_date=target_date,
-                end_date=target_date
+                end_date=target_date,
+                target_date=target_date
             )
 
-            if not result or not result.get('success'):
+            # result는 boolean이므로 직접 체크
+            if not result:
                 logger.warning(f"[{stock_code}] API 데이터 수집 실패")
                 return False
 
-            api_data = result.get('data')
+            logger.info(f"[{stock_code}] API 데이터 수집 성공")
+
+            # 특정 날짜 데이터만 추출 (API 수집 후 DB에서 조회)
+            api_data = self._extract_target_date_data(stock_code, target_date)
+
             if not api_data:
                 logger.warning(f"[{stock_code}] {target_date} 데이터 없음 (휴장일 가능성)")
                 return False
 
-            # 데이터베이스 업데이트 (DB는 일반 형식으로 저장)
+            logger.info(f"[{stock_code}] {target_date} 데이터 추출 성공")
+
+            # 데이터베이스 업데이트
             success = self._save_or_update_data(task, api_data)
 
             if success:
@@ -446,12 +594,11 @@ class DateSpecificUpdater:
                     self.stats['inserted'] += 1
 
                 elif task.action == 'UPDATE':
-                    # 기존 데이터 수정
+                    # 기존 데이터 수정 (updated_at 제거)
                     query = f"""
                     UPDATE {table_name} 
                     SET open_price = %s, high_price = %s, low_price = %s, 
-                        close_price = %s, volume = %s, trading_value = %s,
-                        updated_at = NOW()
+                        close_price = %s, volume = %s, trading_value = %s
                     WHERE date = %s
                     """
 
@@ -619,16 +766,15 @@ class DateSpecificUpdater:
             return False
 
     def run_date_specific_update(self, stock_codes: List[str] = None,
-                                 manual_edit: bool = False, confirm: bool = True) -> bool:
-        """날짜 지정 업데이트 실행 (완전 개선)"""
+                                 manual_edit: bool = False, confirm: bool = True,
+                                 test_limit: int = None) -> bool:
+        """날짜 지정 업데이트 실행 (메모리 효율적 개별 처리)"""
         self.stats['start_time'] = datetime.now()
 
         # 수동 편집 모드
         if manual_edit:
             if not stock_codes or len(stock_codes) != 1:
                 self.console.print("❌ 수동 편집 모드는 정확히 하나의 종목 코드가 필요합니다.")
-                self.console.print(
-                    "예: python scripts/date_specific_updater.py --codes 005930 --date 2025-07-01 --manual-edit")
                 return False
 
             if not self.initialize_services():
@@ -638,9 +784,14 @@ class DateSpecificUpdater:
 
         # 일반 업데이트 모드
         today = datetime.now().strftime('%Y%m%d')
+        market_today = get_market_today().strftime('%Y%m%d')
+
         date_display = f"{self.target_date}"
-        if self.target_date == today:
-            date_display += " (오늘)"
+        if self.target_date == market_today:
+            if market_today == today:
+                date_display += " (시장 기준 오늘)"
+            else:
+                date_display += " (전 영업일 - 장 시작 전)"
 
         self.console.print(Panel.fit(
             f"📅 날짜 지정 데이터 업데이트\n대상 날짜: {date_display}\n대상 시장: 코스피 + 코스닥 (숫자 6자리)\nAPI 요청: XXXXXX_AL 형식 (통합 데이터)",
@@ -652,33 +803,49 @@ class DateSpecificUpdater:
             if not self.initialize_services():
                 return False
 
-            # 2. 업데이트 작업 분석
-            tasks = self.analyze_update_tasks(stock_codes)
-            if not tasks:
-                self.console.print("❌ 업데이트 대상이 없습니다!")
+            # 2. 대상 종목 코드 조회 (메모리 효율적)
+            if stock_codes:
+                # 특정 종목들만
+                target_codes = []
+                for code in stock_codes:
+                    try:
+                        normalized_code = StockCodeManager.normalize_to_db_format(code)
+                        target_codes.append(normalized_code)
+                    except ValueError as e:
+                        logger.warning(f"종목 코드 정규화 실패: {e}")
+                        continue
+            else:
+                # 전체 활성 종목
+                target_codes = self._get_active_stock_codes(limit=test_limit)
+
+            if not target_codes:
+                self.console.print("❌ 대상 종목이 없습니다!")
                 return False
 
-            self.stats['total_stocks'] = len(tasks)
+            self.stats['total_stocks'] = len(target_codes)
 
-            # 3. 작업 요약 출력
-            self._display_task_summary(tasks)
-
-            # 4. 사용자 확인 (옵션)
+            # 3. 사용자 확인 (옵션)
             if confirm:
-                if not Confirm.ask(f"\n📅 {date_display} 데이터를 업데이트하시겠습니까?"):
+                if not Confirm.ask(f"\n📅 {date_display} 데이터를 {len(target_codes)}개 종목 업데이트하시겠습니까?"):
                     self.console.print("❌ 업데이트가 취소되었습니다.")
                     return False
 
-            # 5. 개별 업데이트 실행
+            # 4. 개별 처리 (메모리 효율적)
             with Progress() as progress:
-                task_id = progress.add_task("📊 업데이트 진행", total=len(tasks))
+                task_id = progress.add_task("📊 업데이트 진행", total=len(target_codes))
 
-                for i, task in enumerate(tasks):
+                for i, stock_code in enumerate(target_codes):
                     progress.update(
                         task_id,
                         completed=i,
-                        description=f"📊 [{task.stock_code}] {task.stock_name} {task.action}..."
+                        description=f"📊 [{stock_code}] 분석 및 업데이트..."
                     )
+
+                    # 개별 분석
+                    task = self._analyze_single_stock(stock_code)
+                    if not task:
+                        self.stats['failed'] += 1
+                        continue
 
                     # 개별 업데이트 실행
                     success = self.update_single_stock(task)
@@ -686,13 +853,16 @@ class DateSpecificUpdater:
                     if not success:
                         self.stats['failed'] += 1
 
+                    # 메모리 해제
+                    del task
+
                     # API 제한 준수 (3.6초 대기)
-                    if i < len(tasks) - 1:  # 마지막이 아니면
+                    if i < len(target_codes) - 1:  # 마지막이 아니면
                         time.sleep(3.6)
 
-                progress.update(task_id, completed=len(tasks))
+                progress.update(task_id, completed=len(target_codes))
 
-            # 6. 최종 결과 출력
+            # 5. 최종 결과 출력
             self._display_final_results()
             return True
 
@@ -820,6 +990,7 @@ def main():
     parser.add_argument("--codes", nargs="+", help="특정 종목 코드들 (공백으로 구분, 일반 형식 사용)")
     parser.add_argument("--manual-edit", action="store_true", help="수동 데이터 편집 모드 (종목코드 + 날짜 필요)")
     parser.add_argument("--no-confirm", action="store_true", help="확인 없이 자동 실행")
+    parser.add_argument("--test", type=int, metavar="N", help="테스트 모드: N개 종목만 처리 (예: --test 5)")
 
     args = parser.parse_args()
 
@@ -858,7 +1029,8 @@ def main():
         success = updater.run_date_specific_update(
             stock_codes=stock_codes,
             manual_edit=manual_edit,
-            confirm=not no_confirm
+            confirm=not no_confirm,
+            test_limit=args.test
         )
 
         if success:
