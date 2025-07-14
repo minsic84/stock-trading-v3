@@ -30,7 +30,8 @@ class StockCodeCollector:
             'new_stock': '5',  # 신주인수권
             'reit': '6',  # 리츠
             'high_yield': '9',  # 하이일드펀드
-            'kotc': '30'  # K-OTC
+            'kotc': '30',  # K-OTC
+            'NXT종목': 'NXT' #NXT종목
         }
 
     def get_market_codes(self, market: str) -> List[str]:
@@ -75,6 +76,7 @@ class StockCodeCollector:
     def get_kosdaq_codes(self) -> List[str]:
         """코스닥 전체 종목코드 수집"""
         return self.get_market_codes('kosdaq')
+
 
     def get_all_stock_codes(self) -> Dict[str, List[str]]:
         """
