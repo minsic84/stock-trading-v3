@@ -243,21 +243,22 @@ class SupplyDemandNewCollector:
             return {'success': False, 'error': f'TR 요청 오류: {e}'}
 
     def _create_supply_demand_input(self, stock_code: str, target_date: str = "") -> Dict[str, Any]:
-        """OPT10060 입력 데이터 생성 (_AL 접미사 추가)"""
+        """OPT10060 입력 데이터 생성"""
         return {
             '일자': target_date if target_date else '',  # 빈값이면 최근일부터
-            '종목코드': f"{stock_code}_AL",  # 🔧 _AL 접미사 필수!
+            '종목코드': stock_code,
             '금액수량구분': '1',  # 1:금액
-            '매매구분': '0',      # 0:순매수
-            '단위구분': '1000'    # 1000:천주
+            '매매구분': '0',  # 0:순매수
+            '단위구분': '1000'  # 1000:천주
         }
 
     def _parse_supply_demand_response(self, response: Any, stock_code: str) -> List[Dict[str, Any]]:
-        """수급 데이터 응답 파싱 (기존 검증된 로직 사용)"""
+        """수급 데이터 응답 파싱"""
         try:
-            print(f"   🔍 {stock_code} 수급 데이터 파싱 시작")
-
             # 키움 API 응답 구조 확인
+            print(f"   🔍 응답 구조 분석: {type(response)}")
+
+            # response가 딕셔너리인지 확인
             if not isinstance(response, dict):
                 print(f"   ⚠️ 응답이 딕셔너리가 아님: {type(response)}")
                 return []
@@ -270,48 +271,39 @@ class SupplyDemandNewCollector:
 
             # 파싱 여부 확인
             if not data_info.get('parsed', False):
-                error_msg = data_info.get('error', '알 수 없는 오류')
-                print(f"   ⚠️ 데이터가 파싱되지 않음: {error_msg}")
-                # 데이터가 없는 종목(상장폐지, 거래정지 등)일 수 있음
+                print(f"   ⚠️ 데이터가 파싱되지 않음: {data_info.get('error', '알 수 없는 오류')}")
                 return []
 
             # raw_data 추출
             raw_data = data_info.get('raw_data', [])
             if not raw_data:
-                print(f"   ⚠️ raw_data가 비어있음 (비활성 종목 또는 데이터 없음)")
+                print(f"   ⚠️ raw_data가 비어있음 (데이터 없음 또는 비활성 종목)")
                 return []
 
-            print(f"   📊 파싱할 원시 데이터: {len(raw_data)}건")
-
-            # 기존 검증된 파싱 로직 사용 (supply_demand_collector.py 기반)
-            supply_data = []
+            print(f"   📊 파싱할 데이터: {len(raw_data)}건")
+            parsed_data = []
 
             for i, row_data in enumerate(raw_data):
                 try:
-                    # 🔧 실제 확인된 필드들로 파싱 (기존 코드와 동일)
+                    # 필드 매핑 (API 응답 필드명 → 파싱된 키)
                     parsed_row = {
-                        # 기본 정보
                         '일자': self._clean_string(row_data.get('일자', '')),
-                        '현재가': self._parse_price(row_data.get('현재가', '')),
-                        '전일대비': self._parse_price(row_data.get('전일대비', '')),
-                        '누적거래대금': self._parse_int(row_data.get('누적거래대금', '0')),
-
-                        # 수급 정보 (실제 필드명 사용)
-                        '개인투자자': self._parse_int(row_data.get('개인투자자', '0')),  # 개인
-                        '외국인투자': self._parse_int(row_data.get('내외국인', '0')),  # 🔧 외국인은 '내외국인' 필드
-                        '기관계': self._parse_int(row_data.get('기관계', '0')),  # 기관 합계
-
-                        # 세부 기관별
-                        '금융투자': self._parse_int(row_data.get('금융투자', '0')),
-                        '보험': self._parse_int(row_data.get('보험', '0')),
-                        '투신': self._parse_int(row_data.get('투신', '0')),
-                        '기타금융': self._parse_int(row_data.get('기타금융', '0')),
-                        '은행': self._parse_int(row_data.get('은행', '0')),
-                        '연기금등': self._parse_int(row_data.get('연기금등', '0')),
-                        '사모펀드': self._parse_int(row_data.get('사모펀드', '0')),
-                        '국가': self._parse_int(row_data.get('국가', '0')),
-                        '기타법인': self._parse_int(row_data.get('기타법인', '0')),
-                        '내외국인': self._parse_int(row_data.get('내외국인', '0'))  # 원본 필드도 보존
+                        '현재가': self._parse_int(row_data.get('현재가', 0)),
+                        '전일대비': self._parse_int(row_data.get('전일대비', 0)),
+                        '누적거래대금': self._parse_int(row_data.get('누적거래대금', 0)),
+                        '개인투자자': self._parse_int(row_data.get('개인투자자', 0)),
+                        '외국인투자': self._parse_int(row_data.get('외국인투자', 0)),
+                        '기관계': self._parse_int(row_data.get('기관계', 0)),
+                        '금융투자': self._parse_int(row_data.get('금융투자', 0)),
+                        '보험': self._parse_int(row_data.get('보험', 0)),
+                        '투신': self._parse_int(row_data.get('투신', 0)),
+                        '기타금융': self._parse_int(row_data.get('기타금융', 0)),
+                        '은행': self._parse_int(row_data.get('은행', 0)),
+                        '연기금등': self._parse_int(row_data.get('연기금등', 0)),
+                        '사모펀드': self._parse_int(row_data.get('사모펀드', 0)),
+                        '국가': self._parse_int(row_data.get('국가', 0)),
+                        '기타법인': self._parse_int(row_data.get('기타법인', 0)),
+                        '내외국인': self._parse_int(row_data.get('내외국인', 0))
                     }
 
                     # 유효한 날짜가 있는 경우만 추가
@@ -321,9 +313,13 @@ class SupplyDemandNewCollector:
                         date_str = date_str.replace('-', '').replace('/', '').strip()
                         if len(date_str) == 8 and date_str.isdigit():
                             parsed_row['일자'] = date_str
-                            supply_data.append(parsed_row)
+                            parsed_data.append(parsed_row)
+
+                            # 첫 번째 데이터 샘플 출력
+                            if i == 0:
+                                print(f"   📊 샘플: {date_str} - 개인:{parsed_row['개인투자자']:,}, 외국인:{parsed_row['외국인투자']:,}")
                         else:
-                            print(f"   ⚠️ 잘못된 날짜 형식: '{date_str}' (행 {i})")
+                            print(f"   ⚠️ 잘못된 날짜 형식: '{date_str}'")
                     else:
                         print(f"   ⚠️ 날짜 없음 (행 {i})")
 
@@ -331,17 +327,11 @@ class SupplyDemandNewCollector:
                     print(f"   ⚠️ 행 {i} 파싱 오류: {e}")
                     continue
 
-            print(f"   ✅ 파싱 완료: {len(supply_data)}건 유효 데이터")
-
-            # 샘플 데이터 출력 (기존 로직과 동일)
-            if supply_data:
-                sample = supply_data[0]
-                print(f"   📊 샘플: {sample['일자']} - 개인:{sample['개인투자자']:,}, 외국인:{sample['외국인투자']:,}, 기관:{sample['기관계']:,}")
-
-            return supply_data
+            print(f"   ✅ 파싱 완료: {len(parsed_data)}건 유효 데이터")
+            return parsed_data
 
         except Exception as e:
-            print(f"   ❌ 수급 데이터 파싱 실패: {e}")
+            print(f"   ❌ 응답 파싱 실패: {e}")
             import traceback
             print(f"   📋 상세 오류: {traceback.format_exc()}")
             return []
@@ -351,19 +341,6 @@ class SupplyDemandNewCollector:
         if not value:
             return ""
         return str(value).strip()
-
-    def _parse_price(self, price_str: str) -> int:
-        """가격 문자열 파싱 (+61000, -1000 등) - 기존 로직 사용"""
-        if not price_str:
-            return 0
-
-        try:
-            # + 또는 - 부호 처리
-            clean_price = price_str.replace('+', '').replace('-', '').replace(',', '')
-            sign = -1 if price_str.strip().startswith('-') else 1
-            return int(clean_price) * sign if clean_price.isdigit() else 0
-        except:
-            return 0
 
     def _parse_int(self, value) -> int:
         """안전한 정수 변환"""
@@ -426,7 +403,7 @@ class SupplyDemandNewCollector:
                 stock_code = stock_info['code']
                 stock_name = stock_info.get('name', stock_code)
 
-                print(f"\n📊 [{i+1}/{len(target_stocks)}] {stock_code} ({stock_name})")
+                print(f"\n📊 [{i + 1}/{len(target_stocks)}] {stock_code} ({stock_name})")
 
                 # 단일 종목 수집
                 result = self.collect_single_stock(stock_code, force_full=force_full)
@@ -440,7 +417,8 @@ class SupplyDemandNewCollector:
             self.stats['end_time'] = datetime.now()
             elapsed_time = self.stats['end_time'] - self.stats['start_time']
 
-            success_rate = (self.stats['completed_stocks'] / self.stats['total_stocks'] * 100) if self.stats['total_stocks'] > 0 else 0
+            success_rate = (self.stats['completed_stocks'] / self.stats['total_stocks'] * 100) if self.stats[
+                                                                                                      'total_stocks'] > 0 else 0
 
             final_result = {
                 'success': True,
@@ -474,7 +452,8 @@ class SupplyDemandNewCollector:
 
 
 # 편의 함수
-def create_supply_demand_new_collector(session: KiwoomSession, config: Optional[Config] = None) -> SupplyDemandNewCollector:
+def create_supply_demand_new_collector(session: KiwoomSession,
+                                       config: Optional[Config] = None) -> SupplyDemandNewCollector:
     """새로운 수급 데이터 수집기 생성"""
     return SupplyDemandNewCollector(session, config)
 
