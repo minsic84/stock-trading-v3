@@ -165,9 +165,9 @@ class SupplyDemandCollector:
 
             # API 요청 파라미터
             input_data = {
-                '종목코드': stock_code,
-                '기준일자': end_date,  # 종료일자부터 역순으로
-                '금액수량구분': '1'  # 1:금액
+                '종목코드': f"{stock_code}_AL",  # 005930_AL
+                '기준일자': end_date,
+                '금액수량구분': '1'
             }
 
             # TR 요청
@@ -207,9 +207,9 @@ class SupplyDemandCollector:
 
             # API 요청 파라미터
             input_data = {
-                '종목코드': stock_code,
-                '기준일자': end_date,  # 종료일자부터 역순으로
-                '금액수량구분': '1'  # 1:금액
+                '종목코드': f"{stock_code}_AL",  # 005930_AL
+                '기준일자': end_date,
+                '금액수량구분': '1'
             }
 
             # TR 요청

@@ -227,238 +227,33 @@ class KiwoomAPIConnector(QAxWidget):
             if self.tr_event_loop:
                 self.tr_event_loop.exit()
 
+    # connector.py 수정 부분 - _parse_tr_data_immediately 메서드 개선
+
     def _parse_tr_data_immediately(self, tr_code: str, record_name: str, rq_name: str) -> Dict[str, Any]:
-        """TR 데이터 즉시 파싱 (이벤트 핸들러에서 호출)"""
+        """TR 데이터 즉시 파싱 (이벤트 핸들러에서 호출) - 동적 필드 처리"""
         try:
             print(f"🔍 즉시 파싱 시작: TR={tr_code}, 레코드명='{record_name}'")
 
-            # OPT10001은 단일 레코드 데이터이므로 특별 처리
-            if tr_code.lower() == 'opt10001':
-                print(f"🔍 OPT10001 단일 레코드 파싱 모드")
+            # 🆕 tr_codes.py에서 동적으로 필드 정보 가져오기
+            try:
+                from ..api.tr_codes import get_tr_info, get_output_fields
+                tr_info = get_tr_info(tr_code)
+                fields = list(get_output_fields(tr_code).keys())
+                print(f"🔧 동적 필드 로드: {tr_code} -> {len(fields)}개 필드")
+                print(f"📋 필드 목록: {fields}")
+            except Exception as e:
+                print(f"⚠️ tr_codes.py에서 필드 로드 실패: {e}")
+                # 기존 하드코딩 필드로 폴백
+                fields = self._get_fallback_fields(tr_code)
+                print(f"🔄 폴백 필드 사용: {fields}")
 
-                # OPT10001 출력 필드 정의
-                fields = ["종목명", "현재가", "전일대비", "등락률", "거래량", "시가", "고가", "저가",
-                          "상한가", "하한가", "시가총액", "시가총액규모", "상장주수", "PER", "PBR"]
+            # TR별 처리 방식 결정
+            is_single_record = tr_code.lower() in ['opt10001']  # 단일 레코드 TR들
 
-                # 가능한 레코드명들
-                possible_records = [record_name, "", rq_name, tr_code]
-
-                row_data = {}
-                used_record = None
-
-                # 각 레코드명으로 시도
-                # 각 레코드명으로 시도
-                used_record = None
-                found_data = None
-
-                for test_record in possible_records:
-                    try:
-                        print(f"🔍 '{test_record}' 레코드명으로 '종목명' 필드 테스트 중...")
-
-                        # 첫 번째 필드로 테스트
-                        test_value = self.dynamicCall("GetCommData(QString, QString, int, QString)",
-                                                      tr_code, test_record, 0, "종목명")
-
-                        print(f"🔍 '{test_record}' 종목명 결과: '{test_value}'")
-
-                        if test_value and test_value.strip():
-                            used_record = test_record
-                            found_data = test_value.strip()
-                            print(f"✅ 사용할 레코드명: '{used_record}' (종목명: '{found_data}')")
-                            break
-                        else:
-                            print(f"❌ '{test_record}': 종목명 데이터 없음")
-
-                    except Exception as e:
-                        print(f"❌ '{test_record}' 오류: {e}")
-                        continue
-
-                print(f"🔍 최종 확인 - used_record: '{used_record}', found_data: '{found_data}'")
-
-                if not used_record or not found_data:
-                    print(f"❌ 사용 가능한 레코드명을 찾을 수 없음")
-
-                    # 추가 디버깅: 다른 필드들도 시도해보기
-                    print(f"🔧 다른 필드들로 재시도...")
-                    other_fields = ["현재가", "시가", "고가", "저가"]
-
-                    for test_record in possible_records:
-                        for field in other_fields:
-                            try:
-                                test_value = self.dynamicCall("GetCommData(QString, QString, int, QString)",
-                                                              tr_code, test_record, 0, field)
-                                print(f"🔍 '{test_record}' + '{field}': '{test_value}'")
-
-                                if test_value and test_value.strip():
-                                    used_record = test_record
-                                    found_data = test_value.strip()
-                                    print(f"✅ 대안 필드로 발견: '{test_record}' + '{field}' = '{found_data}'")
-                                    break
-                            except Exception as e:
-                                print(f"❌ '{test_record}' + '{field}' 오류: {e}")
-                                continue
-                        if used_record and found_data:
-                            break
-
-                if not used_record or not found_data:
-                    print(f"⚠️ {tr_code}: 데이터를 찾을 수 없음 (상장폐지/거래정지 종목일 수 있음)")
-                    return {
-                        "tr_code": tr_code,
-                        "record_name": record_name,
-                        "repeat_count": 0,
-                        "raw_data": [],
-                        "parsed": False,
-                        "error": "데이터 없음 (비활성 종목 추정)"
-                    }
-
-                print(f"✅ 데이터 추출 시작 - 레코드명: '{used_record}'")
-
-                if not used_record:
-                    print(f"❌ 사용 가능한 레코드명을 찾을 수 없음")
-                    return {
-                        "tr_code": tr_code,
-                        "record_name": record_name,
-                        "repeat_count": 0,
-                        "raw_data": [],
-                        "parsed": False,
-                        "error": "사용 가능한 레코드명 없음"
-                    }
-
-                # 모든 필드 데이터 추출
-                for field in fields:
-                    try:
-                        value = self.dynamicCall("GetCommData(QString, QString, int, QString)",
-                                                 tr_code, used_record, 0, field)
-                        row_data[field] = value.strip() if value else ""
-                    except:
-                        row_data[field] = ""
-
-                # 기본 필드 확인
-                if not row_data.get("종목명"):
-                    print(f"❌ 필수 데이터(종목명) 없음")
-                    return {
-                        "tr_code": tr_code,
-                        "record_name": used_record,
-                        "repeat_count": 0,
-                        "raw_data": [],
-                        "parsed": False,
-                        "error": "필수 데이터 없음"
-                    }
-
-                print(f"✅ OPT10001 파싱 완료: {row_data.get('종목명', 'N/A')} - {row_data.get('현재가', 'N/A')}")
-
-                return {
-                    "tr_code": tr_code,
-                    "record_name": used_record,
-                    "repeat_count": 1,
-                    "raw_data": [row_data],
-                    "parsed": True,
-                    "extracted_at": datetime.now()
-                }
-
-            # 기존 로직 (반복 데이터용 - OPT10081 등)
-            # 여러 레코드명으로 시도
-            possible_records = [
-                record_name,  # 이벤트에서 받은 레코드명
-                "",  # 빈 문자열
-                rq_name,  # 요청명
-                tr_code  # TR 코드
-            ]
-
-            repeat_cnt = 0
-            used_record = None
-
-            for test_record in possible_records:
-                try:
-                    cnt = self.dynamicCall("GetRepeatCnt(QString, QString)", tr_code, test_record)
-                    print(f"레코드명 '{test_record}' 시도: {cnt}개")
-
-                    if cnt > 0:
-                        repeat_cnt = cnt
-                        used_record = test_record
-                        break
-                except Exception as e:
-                    print(f"레코드명 '{test_record}' 오류: {e}")
-                    continue
-
-            if repeat_cnt == 0:
-                print("❌ GetRepeatCnt로 데이터 개수 확인 실패")
-
-                # 대안: 직접 데이터 접근으로 개수 확인
-                print("🔄 직접 데이터 접근으로 개수 확인 시도...")
-                for test_record in possible_records:
-                    try:
-                        # 최대 1000개까지 확인
-                        for i in range(1000):
-                            test_data = self.dynamicCall("GetCommData(QString, QString, int, QString)",
-                                                         tr_code, test_record, i, "일자")
-                            if test_data and test_data.strip():
-                                repeat_cnt = i + 1
-                            else:
-                                break
-
-                        if repeat_cnt > 0:
-                            used_record = test_record
-                            print(f"✅ 직접 접근으로 확인: {repeat_cnt}개 (레코드명: '{test_record}')")
-                            break
-
-                    except Exception as e:
-                        continue
-
-            if repeat_cnt == 0:
-                print("❌ 모든 방법으로 데이터 확인 실패")
-                return {
-                    "tr_code": tr_code,
-                    "record_name": record_name,
-                    "repeat_count": 0,
-                    "raw_data": [],
-                    "parsed": False,
-                    "error": "데이터 개수 확인 실패"
-                }
-
-            print(f"✅ 데이터 개수 확인: {repeat_cnt}개 (레코드명: '{used_record}')")
-
-            # 실제 데이터 추출
-            raw_data = []
-
-            # opt10081 일봉 데이터의 표준 필드들
-            fields = ["일자", "현재가", "거래량", "거래대금", "시가", "고가", "저가"]
-
-            for i in range(repeat_cnt):
-                try:
-                    row_data = {}
-
-                    for field in fields:
-                        try:
-                            value = self.dynamicCall("GetCommData(QString, QString, int, QString)",
-                                                     tr_code, used_record, i, field)
-                            row_data[field] = value.strip() if value else ""
-                        except:
-                            row_data[field] = ""
-
-                    # 필수 데이터 확인
-                    if row_data.get("일자") and row_data.get("현재가"):
-                        raw_data.append(row_data)
-
-                except Exception as e:
-                    print(f"데이터 추출 오류 {i}: {e}")
-                    continue
-
-            print(f"✅ 실제 데이터 추출 완료: {len(raw_data)}개")
-
-            # 첫 번째 데이터 샘플 출력
-            if raw_data:
-                sample = raw_data[0]
-                print(f"📊 샘플 데이터: 일자={sample.get('일자')}, 현재가={sample.get('현재가')}")
-
-            return {
-                "tr_code": tr_code,
-                "record_name": used_record,
-                "repeat_count": len(raw_data),
-                "raw_data": raw_data,
-                "parsed": True,
-                "extracted_at": datetime.now()
-            }
+            if is_single_record:
+                return self._parse_single_record_data(tr_code, record_name, rq_name, fields)
+            else:
+                return self._parse_multi_record_data(tr_code, record_name, rq_name, fields)
 
         except Exception as e:
             print(f"❌ 즉시 파싱 오류: {e}")
@@ -472,6 +267,227 @@ class KiwoomAPIConnector(QAxWidget):
                 "parsed": False,
                 "error": str(e)
             }
+
+    def _get_fallback_fields(self, tr_code: str) -> list:
+        """tr_codes.py 로드 실패 시 사용할 폴백 필드들"""
+        fallback_fields = {
+            'opt10001': ["종목명", "현재가", "전일대비", "등락률", "거래량", "시가", "고가", "저가",
+                         "상한가", "하한가", "시가총액", "시가총액규모", "상장주수", "PER", "PBR"],
+            'opt10081': ["일자", "현재가", "거래량", "거래대금", "시가", "고가", "저가", "전일종가"],
+            'opt10060': ["일자", "개인투자자", "외국인투자자", "기관계", "금융투자", "보험", "투신"],
+            'opt10014': ["일자", "차익매수", "차익매도", "비차익매수", "비차익매도", "전체매수", "전체매도"],
+            'opt10080': ["시간", "시가", "고가", "저가", "현재가", "거래량", "거래대금"]
+        }
+
+        return fallback_fields.get(tr_code.lower(), ["일자", "현재가", "거래량"])
+
+    def _parse_single_record_data(self, tr_code: str, record_name: str, rq_name: str, fields: list) -> Dict[str, Any]:
+        """단일 레코드 데이터 파싱 (OPT10001 등)"""
+        print(f"🔍 {tr_code} 단일 레코드 파싱 모드")
+
+        # 가능한 레코드명들
+        possible_records = [record_name, "", rq_name, tr_code]
+
+        row_data = {}
+        used_record = None
+        found_data = None
+
+        # 첫 번째 필드로 레코드명 테스트
+        first_field = fields[0] if fields else "종목명"
+
+        for test_record in possible_records:
+            try:
+                print(f"🔍 '{test_record}' 레코드명으로 '{first_field}' 필드 테스트 중...")
+
+                test_value = self.dynamicCall("GetCommData(QString, QString, int, QString)",
+                                              tr_code, test_record, 0, first_field)
+
+                print(f"🔍 '{test_record}' {first_field} 결과: '{test_value}'")
+
+                if test_value and test_value.strip():
+                    used_record = test_record
+                    found_data = test_value.strip()
+                    print(f"✅ 사용할 레코드명: '{used_record}' ({first_field}: '{found_data}')")
+                    break
+                else:
+                    print(f"❌ '{test_record}': {first_field} 데이터 없음")
+
+            except Exception as e:
+                print(f"❌ '{test_record}' 오류: {e}")
+                continue
+
+        # 대안 필드들로 재시도
+        if not used_record and len(fields) > 1:
+            print(f"🔧 다른 필드들로 재시도...")
+            for test_record in possible_records:
+                for field in fields[1:4]:  # 처음 몇 개 필드만 시도
+                    try:
+                        test_value = self.dynamicCall("GetCommData(QString, QString, int, QString)",
+                                                      tr_code, test_record, 0, field)
+
+                        if test_value and test_value.strip():
+                            used_record = test_record
+                            found_data = test_value.strip()
+                            print(f"✅ 대안 필드로 발견: '{test_record}' + '{field}' = '{found_data}'")
+                            break
+                    except Exception:
+                        continue
+                if used_record:
+                    break
+
+        if not used_record:
+            print(f"⚠️ {tr_code}: 데이터를 찾을 수 없음 (상장폐지/거래정지 종목일 수 있음)")
+            return {
+                "tr_code": tr_code,
+                "record_name": record_name,
+                "repeat_count": 0,
+                "raw_data": [],
+                "parsed": False,
+                "error": "데이터 없음 (비활성 종목 추정)"
+            }
+
+        print(f"✅ 데이터 추출 시작 - 레코드명: '{used_record}'")
+
+        # 모든 필드 데이터 추출
+        for field in fields:
+            try:
+                value = self.dynamicCall("GetCommData(QString, QString, int, QString)",
+                                         tr_code, used_record, 0, field)
+                row_data[field] = value.strip() if value else ""
+            except Exception as e:
+                print(f"⚠️ 필드 '{field}' 추출 실패: {e}")
+                row_data[field] = ""
+
+        # 기본 필드 확인 (TR별로 다름)
+        required_field = fields[0] if fields else "종목명"
+        if not row_data.get(required_field):
+            print(f"❌ 필수 데이터({required_field}) 없음")
+            return {
+                "tr_code": tr_code,
+                "record_name": used_record,
+                "repeat_count": 0,
+                "raw_data": [],
+                "parsed": False,
+                "error": "필수 데이터 없음"
+            }
+
+        print(
+            f"✅ {tr_code} 파싱 완료: {row_data.get(required_field, 'N/A')} - {row_data.get(fields[1] if len(fields) > 1 else 'N/A', 'N/A')}")
+
+        return {
+            "tr_code": tr_code,
+            "record_name": used_record,
+            "repeat_count": 1,
+            "raw_data": [row_data],
+            "parsed": True,
+            "extracted_at": datetime.now()
+        }
+
+    def _parse_multi_record_data(self, tr_code: str, record_name: str, rq_name: str, fields: list) -> Dict[str, Any]:
+        """다중 레코드 데이터 파싱 (OPT10081, OPT10060, OPT10014, OPT10080 등)"""
+        print(f"🔍 {tr_code} 다중 레코드 파싱 모드")
+
+        # 여러 레코드명으로 시도
+        possible_records = [record_name, "", rq_name, tr_code]
+
+        repeat_cnt = 0
+        used_record = None
+
+        # GetRepeatCnt로 개수 확인
+        for test_record in possible_records:
+            try:
+                cnt = self.dynamicCall("GetRepeatCnt(QString, QString)", tr_code, test_record)
+                print(f"레코드명 '{test_record}' 시도: {cnt}개")
+
+                if cnt > 0:
+                    repeat_cnt = cnt
+                    used_record = test_record
+                    break
+            except Exception as e:
+                print(f"레코드명 '{test_record}' 오류: {e}")
+                continue
+
+        # 직접 데이터 접근으로 개수 확인 (GetRepeatCnt 실패 시)
+        if repeat_cnt == 0:
+            print("❌ GetRepeatCnt로 데이터 개수 확인 실패")
+            print("🔄 직접 데이터 접근으로 개수 확인 시도...")
+
+            first_field = fields[0] if fields else "일자"
+
+            for test_record in possible_records:
+                try:
+                    # 최대 1000개까지 확인
+                    for i in range(1000):
+                        test_data = self.dynamicCall("GetCommData(QString, QString, int, QString)",
+                                                     tr_code, test_record, i, first_field)
+                        if test_data and test_data.strip():
+                            repeat_cnt = i + 1
+                        else:
+                            break
+
+                    if repeat_cnt > 0:
+                        used_record = test_record
+                        print(f"✅ 직접 접근으로 확인: {repeat_cnt}개 (레코드명: '{test_record}')")
+                        break
+
+                except Exception:
+                    continue
+
+        if repeat_cnt == 0:
+            print("❌ 모든 방법으로 데이터 확인 실패")
+            return {
+                "tr_code": tr_code,
+                "record_name": record_name,
+                "repeat_count": 0,
+                "raw_data": [],
+                "parsed": False,
+                "error": "데이터 개수 확인 실패"
+            }
+
+        print(f"✅ 데이터 개수 확인: {repeat_cnt}개 (레코드명: '{used_record}')")
+
+        # 실제 데이터 추출
+        raw_data = []
+
+        for i in range(repeat_cnt):
+            try:
+                row_data = {}
+
+                for field in fields:
+                    try:
+                        value = self.dynamicCall("GetCommData(QString, QString, int, QString)",
+                                                 tr_code, used_record, i, field)
+                        row_data[field] = value.strip() if value else ""
+                    except Exception as e:
+                        print(f"⚠️ 필드 '{field}' 추출 실패 (행 {i}): {e}")
+                        row_data[field] = ""
+
+                # 필수 데이터 확인 (첫 번째 필드가 있으면 유효한 데이터로 간주)
+                first_field = fields[0] if fields else "일자"
+                if row_data.get(first_field):
+                    raw_data.append(row_data)
+
+            except Exception as e:
+                print(f"데이터 추출 오류 {i}: {e}")
+                continue
+
+        print(f"✅ 실제 데이터 추출 완료: {len(raw_data)}개")
+
+        # 첫 번째 데이터 샘플 출력
+        if raw_data and len(fields) >= 2:
+            sample = raw_data[0]
+            field1 = fields[0]
+            field2 = fields[1] if len(fields) > 1 else fields[0]
+            print(f"📊 샘플 데이터: {field1}={sample.get(field1)}, {field2}={sample.get(field2)}")
+
+        return {
+            "tr_code": tr_code,
+            "record_name": used_record,
+            "repeat_count": len(raw_data),
+            "raw_data": raw_data,
+            "parsed": True,
+            "extracted_at": datetime.now()
+        }
 
     def get_comm_data(self, tr_code: str, record_name: str, index: int, field_name: str) -> str:
         """TR 데이터에서 특정 필드 값 추출"""
