@@ -1,39 +1,91 @@
-# Stock Trading System Dependencies
-# Core packages for Kiwoom API integration and data collection
+# =================================================================
+# 주식 트레이딩 시스템 v3 - 패키지 의존성
+# 키움증권 OpenAPI + MySQL 기반 엔터프라이즈급 데이터 수집 시스템
+# =================================================================
 
-# Kiwoom OpenAPI integration
-PyQt5==5.15.10
+# ==============================
+# 키움 OpenAPI 및 GUI
+# ==============================
+PyQt5==5.15.10                # 키움 API 필수 (정확한 버전 고정)
 
-# Database ORM and drivers
-SQLAlchemy==2.0.23
-psycopg2-binary>=2.9.0
+# ==============================
+# 데이터베이스 (MySQL 중심)
+# ==============================
+mysql-connector-python>=8.0.33  # MySQL 공식 드라이버 (최신 버전)
+SQLAlchemy>=2.0.23             # ORM 및 스키마 관리
+pymysql>=1.1.0                 # MySQL 대체 드라이버 (백업용)
 
-# MySQL 드라이버 추가
-mysql-connector-python>=8.0.0
+# ==============================
+# 환경 설정 및 구성
+# ==============================
+python-dotenv>=1.0.0           # .env 파일 환경변수 관리
+PyYAML>=6.0.1                  # YAML 설정 파일 지원
 
-# Configuration and logging
-python-dotenv>=1.0.0
-PyYAML>=6.0.0
+# ==============================
+# 날짜 및 시간 처리
+# ==============================
+python-dateutil>=2.8.2         # 날짜 파싱 및 변환
 
-# Date and time utilities
-python-dateutil>=2.8.0
+# ==============================
+# 데이터 분석 및 처리
+# ==============================
+pandas>=2.1.0                  # 대용량 데이터 처리
+numpy>=1.24.0                  # 수치 계산
 
-# Data analysis libraries
-pandas>=2.0.0
-numpy>=1.24.0
+# ==============================
+# 네트워킹 및 HTTP
+# ==============================
+requests>=2.31.0               # HTTP 요청 (API 호출용)
 
-# Korean stock data (install separately if needed)
-# FinanceDataReader  # Install manually: pip install FinanceDataReader
-# pykrx              # Install manually: pip install pykrx
+# ==============================
+# 콘솔 UI 및 모니터링
+# ==============================
+rich>=13.6.0                   # 실시간 대시보드 및 진행 표시
 
-# Networking and requests
-requests>=2.31.0
+# ==============================
+# 스케줄링 및 자동화
+# ==============================
+schedule>=1.2.0                # 일일 업데이트 스케줄러
+APScheduler>=3.10.4             # 고급 스케줄링 (cron 지원)
 
-# Development and testing
-pytest>=7.4.0
+# ==============================
+# 로깅 및 모니터링
+# ==============================
+loguru>=0.7.2                  # 고급 로깅 시스템 (기존 logging 대체)
 
-# Console Dashboard
-rich>=13.0.0
+# ==============================
+# 성능 최적화
+# ==============================
+psutil>=5.9.5                  # 시스템 리소스 모니터링
+memory-profiler>=0.61.0        # 메모리 사용량 분석
 
-# 스케줄링 (일일 업데이트용)
-schedule>=1.2.0
+# ==============================
+# 데이터 유효성 검증
+# ==============================
+pydantic>=2.4.2                # 데이터 모델 검증
+# marshmallow>=3.20.1          # 설치 오류로 제거 (pydantic으로 대체)
+
+# ==============================
+# 개발 도구 (선택사항)
+# ==============================
+# pytest>=7.4.3                # 테스트 프레임워크
+# black>=23.9.1                 # 코드 포매터
+# pylint>=3.0.1                 # 코드 품질 검사
+# mypy>=1.6.1                   # 타입 체킹
+
+# ==============================
+# 한국 주식 데이터 (수동 설치)
+# ==============================
+# 아래 패키지들은 필요시 별도 설치:
+# pip install FinanceDataReader  # 한국 주식 데이터
+# pip install pykrx              # 한국거래소 데이터
+# pip install yfinance           # 글로벌 주식 데이터
+
+# ==============================
+# 시스템 요구사항
+# ==============================
+# Python: 3.8+ (32비트 권장 - 키움 API 호환)
+# MySQL: 8.0+
+# Windows: 10/11 (키움 OpenAPI 필수)
+# RAM: 4GB+ (대용량 데이터 수집)
+# Storage: 50GB+ (MySQL 데이터)
