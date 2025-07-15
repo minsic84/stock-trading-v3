@@ -30,7 +30,7 @@ def test_supply_demand():
         print("✅ 키움 세션 준비 완료")
 
         # 수급데이터 수집기 테스트
-        from src.collectors.supply_demand_collector import SupplyDemandCollector
+        from src.collectors.supply_demand_collector import SupplyDemandNewCollector as SupplyDemandCollector
 
         print("🔧 수급데이터 수집기 초기화...")
         collector = SupplyDemandCollector(session)

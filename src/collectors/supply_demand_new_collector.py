@@ -148,7 +148,7 @@ class SupplyDemandNewCollector:
             return self._create_error_result(stock_code, f"업데이트 모드 실패: {e}")
 
     def _collect_continuous_mode(self, stock_code: str, completeness: Dict[str, Any]) -> Dict[str, Any]:
-        """연속 모드: prev_next=2로 1년치 데이터 수집"""
+        """연속 모드: prev_next=2로 1년치 데이터 수집 (스마트 종료 조건 추가)"""
         try:
             print(f"   🔄 연속 모드: 1년치 데이터 수집")
 
@@ -156,6 +156,16 @@ class SupplyDemandNewCollector:
             request_count = 0
             max_requests = 50  # 최대 요청 수 제한
             prev_next = 0  # 첫 요청은 0
+
+            # 🔧 1년치 데이터 기준 계산
+            from datetime import datetime, timedelta
+            one_year_ago = (datetime.now() - timedelta(days=365)).strftime('%Y%m%d')
+            target_records = 250  # 1년치 예상 영업일 수
+
+            print(f"   📅 수집 목표: {one_year_ago} 이후 데이터 ({target_records}일 예상)")
+
+            # 중복 데이터 감지용
+            previous_batch_dates = set()
 
             while request_count < max_requests:
                 request_count += 1
@@ -175,14 +185,63 @@ class SupplyDemandNewCollector:
                     print(f"   ⚠️ 요청 {request_count}: 파싱된 데이터 없음")
                     break
 
-                # 데이터 추가
+                # 🔧 새로운 종료 조건들 체크
+
+                # 1. 현재 배치의 날짜 범위 확인
+                current_batch_dates = set()
+                oldest_in_batch = "99999999"
+                newest_in_batch = "00000000"
+
+                for data_item in parsed_data:
+                    date_str = data_item.get('date', '').replace('-', '')
+                    if len(date_str) == 8 and date_str.isdigit():
+                        current_batch_dates.add(date_str)
+                        oldest_in_batch = min(oldest_in_batch, date_str)
+                        newest_in_batch = max(newest_in_batch, date_str)
+
+                # 2. 1년 기준 날짜 도달 체크
+                if oldest_in_batch <= one_year_ago:
+                    print(f"   ✅ 1년 기준 날짜 도달! (수집된 최과거일: {oldest_in_batch})")
+                    # 1년 기준 이후 데이터만 필터링
+                    filtered_data = []
+                    for data_item in parsed_data:
+                        date_str = data_item.get('date', '').replace('-', '')
+                        if date_str >= one_year_ago:
+                            filtered_data.append(data_item)
+
+                    if filtered_data:
+                        all_data.extend(filtered_data)
+                        print(f"   📊 마지막 배치: {len(filtered_data)}건 수집 (누적: {len(all_data)}건)")
+
+                    print(f"   🎯 1년치 데이터 수집 완료!")
+                    break
+
+                # 3. 중복 데이터 감지 (같은 날짜 범위가 반복되면 종료)
+                if current_batch_dates and current_batch_dates == previous_batch_dates:
+                    print(f"   ✅ 중복 데이터 감지 - 동일한 날짜 범위 반복!")
+                    print(f"   📅 반복된 날짜 범위: {min(current_batch_dates)} ~ {max(current_batch_dates)}")
+                    break
+
+                # 4. 목표 데이터량 도달 체크
+                if len(all_data) >= target_records:
+                    print(f"   ✅ 목표 데이터량 도달! ({len(all_data)}/{target_records}건)")
+                    # 현재 배치도 추가하고 종료
+                    all_data.extend(parsed_data)
+                    print(f"   📊 최종 배치: {len(parsed_data)}건 수집 (누적: {len(all_data)}건)")
+                    break
+
+                # 정상적으로 데이터 추가
                 all_data.extend(parsed_data)
                 print(f"   📊 요청 {request_count}: {len(parsed_data)}건 수집 (누적: {len(all_data)}건)")
+                print(f"   📅 현재 배치 범위: {oldest_in_batch} ~ {newest_in_batch}")
 
-                # 연속 조회 여부 확인
+                # 다음 반복을 위해 현재 배치 날짜 저장
+                previous_batch_dates = current_batch_dates.copy()
+
+                # 5. 기존 종료 조건: API 연속 조회 여부 확인
                 tr_cont = response.get('tr_cont', '')
                 if tr_cont != '2':
-                    print(f"   ✅ 연속 조회 완료 (tr_cont: {tr_cont})")
+                    print(f"   ✅ API 연속 조회 완료 (tr_cont: {tr_cont})")
                     break
 
                 # 다음 요청은 연속 조회
@@ -190,6 +249,24 @@ class SupplyDemandNewCollector:
 
                 # API 제한 준수
                 time.sleep(self.api_delay)
+
+            # 수집 완료 통계
+            print(f"   📊 연속 수집 완료:")
+            print(f"      - 총 요청 수: {request_count}회")
+            print(f"      - 수집 데이터: {len(all_data)}건")
+
+            if all_data:
+                # 수집된 데이터의 날짜 범위 확인
+                all_dates = []
+                for item in all_data:
+                    date_str = item.get('date', '').replace('-', '')
+                    if len(date_str) == 8 and date_str.isdigit():
+                        all_dates.append(date_str)
+
+                if all_dates:
+                    all_dates.sort()
+                    print(f"      - 날짜 범위: {all_dates[0]} ~ {all_dates[-1]}")
+                    print(f"      - 수집 기간: {len(set(all_dates))}일")
 
             # 수집된 데이터 저장
             saved_count = 0
@@ -208,11 +285,23 @@ class SupplyDemandNewCollector:
                 'collected_records': len(all_data),
                 'saved_records': saved_count,
                 'final_completion_rate': final_completeness['completion_rate'],
-                'is_complete': final_completeness['is_complete']
+                'is_complete': final_completeness['is_complete'],
+                'termination_reason': self._get_termination_reason(request_count, max_requests, len(all_data),
+                                                                   target_records)
             }
 
         except Exception as e:
             return self._create_error_result(stock_code, f"연속 모드 실패: {e}")
+
+    def _get_termination_reason(self, request_count: int, max_requests: int,
+                                collected_count: int, target_records: int) -> str:
+        """종료 사유 반환"""
+        if collected_count >= target_records:
+            return f"목표 데이터량 도달 ({collected_count}/{target_records}건)"
+        elif request_count >= max_requests:
+            return f"최대 요청 수 제한 ({request_count}/{max_requests}회)"
+        else:
+            return "정상 완료 (API 또는 날짜 기준)"
 
     def _request_tr_data(self, stock_code: str, input_data: Dict[str, Any], prev_next: int = 0) -> Dict[str, Any]:
         """TR 요청 실행"""
@@ -244,9 +333,16 @@ class SupplyDemandNewCollector:
 
     def _create_supply_demand_input(self, stock_code: str, target_date: str = "") -> Dict[str, Any]:
         """OPT10060 입력 데이터 생성"""
+        from src.utils.trading_date import get_market_today
+
+        # 날짜가 없으면 시장 기준 오늘 사용
+        if not target_date:
+            today = get_market_today()
+            target_date = today.strftime('%Y%m%d')
+
         return {
-            '일자': target_date if target_date else '',  # 빈값이면 최근일부터
-            '종목코드': stock_code,
+            '일자': target_date,  # 빈값이면 최근일부터
+            '종목코드': f"{stock_code}_AL",
             '금액수량구분': '1',  # 1:금액
             '매매구분': '0',  # 0:순매수
             '단위구분': '1000'  # 1000:천주
