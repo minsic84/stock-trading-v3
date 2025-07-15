@@ -149,6 +149,31 @@ TR_INFO = {
             # 추가 필드는 실제 응답 구조 확인 후 업데이트
         },
         'delay_ms': 3600
+    },
+    # 🆕 업종별지수요청 (업종일봉 데이터)
+    'opt20006': {
+        'name': '업종별지수요청',
+        'description': 'KOSPI/KOSDAQ 업종별 지수 일봉 데이터 조회',
+        'input_fields': {
+            '업종코드': 'string',       # 001:KOSPI종합, 101:KOSDAQ종합
+            '기준일자': 'string'        # YYYYMMDD (연속조회 시 사용)
+        },
+        'output_fields': {
+            # 실제 API 응답에서 확인된 필드들 (한글명)
+
+            '현재가': 'float',          # 종가지수 (소수점 2자리)
+            '거래량': 'int',            # 거래량 (정수)
+            '일자': 'string',           # 거래일 (YYYYMMDD)
+            '시가': 'float',            # 시가지수 (소수점 2자리)
+            '고가': 'float',            # 고가지수 (소수점 2자리)
+            '저가': 'float',            # 저가지수 (소수점 2자리)
+            '거래대금': 'int',          # 거래대금 (정수)
+            '대업종구분': 'float',
+            '소업종구분': 'float',
+            '종목정보': 'int',
+            '전일종가': 'int'
+        },
+        'delay_ms': 3600  # 3.6초 딜레이
     }
 }
 
@@ -285,6 +310,23 @@ def create_opt10014_input(*args, **kwargs):
     """OPT10014는 OPT90013으로 변경됨"""
     print("⚠️ OPT10014는 OPT90013으로 변경되었습니다. create_opt90013_input()을 사용하세요.")
     return create_opt90013_input(*args, **kwargs)
+
+
+def create_opt20006_input(sector_code: str, base_date: str = "") -> dict:
+    """
+    OPT20006 업종별지수 입력 데이터 생성
+
+    Args:
+        sector_code: 업종코드 (001:KOSPI종합, 101:KOSDAQ종합)
+        base_date: 기준일자 (YYYYMMDD, 빈값이면 최근일)
+
+    Returns:
+        입력 데이터 딕셔너리
+    """
+    return {
+        '업종코드': sector_code,
+        '기준일자': base_date
+    }
 
 
 # 테스트 함수
