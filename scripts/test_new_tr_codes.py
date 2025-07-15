@@ -12,7 +12,7 @@ sys.path.insert(0, str(project_root))
 
 from src.api.base_session import create_kiwoom_session
 from src.collectors.supply_demand_collector import SupplyDemandCollector
-from src.collectors.program_trading_collector import ProgramTradingCollector
+from src.collectors.program_trading_collector_test import ProgramTradingCollector
 from src.collectors.minute_data_collector import MinuteDataCollector
 from src.api.tr_codes import show_tr_info, get_all_tr_codes
 
