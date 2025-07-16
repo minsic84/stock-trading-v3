@@ -126,17 +126,21 @@ def print_final_status():
 
 
 def main():
-    """메인 실행 함수"""
+    """메인 실행 함수 - 스마트 재시작 기능 추가"""
     import argparse
 
     # 명령행 인수 파싱
-    parser = argparse.ArgumentParser(description='NXT 일일 업데이트')
+    parser = argparse.ArgumentParser(description='NXT 일일 업데이트 (스마트 재시작 지원)')
     parser.add_argument('--force', action='store_true',
                         help='강제 업데이트 (모든 종목)')
     parser.add_argument('--status-only', action='store_true',
                         help='상태 확인만 수행')
+    parser.add_argument('--restart-analysis', action='store_true',
+                        help='재시작 분석 (실행하지 않고 분석만)')
     parser.add_argument('--codes', type=str,
                         help='특정 종목 코드들 (쉼표 구분)')
+    parser.add_argument('--date', type=str,
+                        help='기준 날짜 (YYYYMMDD, 기본값: 오늘)')
     parser.add_argument('--no-log', action='store_true',
                         help='로그 파일 생성 안함')
 
@@ -150,17 +154,24 @@ def main():
     print_header()
 
     try:
-        # 1. 시스템 상태 확인
+        # 1. 재시작 분석만 수행
+        if args.restart_analysis:
+            print("\n🔍 NXT 재시작 분석 수행 중...")
+            nxt_db = NXTDatabaseService()
+            nxt_db.show_restart_analysis(args.date)
+            return
+
+        # 2. 시스템 상태 확인
         if not check_system_status():
             print("\n❌ 시스템 상태 확인 실패로 종료")
             sys.exit(1)
 
-        # 2. 상태 확인만 하는 경우
+        # 3. 상태 확인만 하는 경우
         if args.status_only:
             print("\n✅ 상태 확인 완료 (업데이트 미실행)")
             return
 
-        # 3. 특정 종목 수집
+        # 4. 특정 종목 수집
         if args.codes:
             stock_codes = [code.strip() for code in args.codes.split(',')]
             print(f"\n🎯 특정 종목 수집: {stock_codes}")
@@ -175,13 +186,21 @@ def main():
                 print("\n✅ 특정 종목 수집 완료!")
                 return
 
-        # 4. 전체 업데이트 실행
+        # 5. 🎯 스마트 재시작으로 전체 업데이트 실행
+        print(f"\n🚀 스마트 재시작으로 NXT 업데이트 시작")
+        print(f"🗓️ 기준 날짜: {args.date or datetime.now().strftime('%Y%m%d')}")
+
+        if args.force:
+            print("🔄 강제 모드: 모든 종목 재수집")
+        else:
+            print("🎯 스마트 모드: 미완료 종목만 수집")
+
         success = run_daily_update(force_update=args.force)
 
-        # 5. 최종 상태 출력
+        # 6. 최종 상태 출력
         print_final_status()
 
-        # 6. 결과에 따른 종료
+        # 7. 결과에 따른 종료
         if success:
             print("\n🎉 NXT 일일 업데이트 성공적으로 완료!")
             logging.info("NXT 일일 업데이트 성공")
@@ -192,6 +211,7 @@ def main():
 
     except KeyboardInterrupt:
         print("\n⚠️ 사용자에 의해 중단되었습니다")
+        print("💡 다시 실행하면 중단된 지점부터 이어서 수집됩니다.")
         logging.warning("사용자 중단")
         sys.exit(1)
 

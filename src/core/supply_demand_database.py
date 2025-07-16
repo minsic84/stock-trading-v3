@@ -299,10 +299,20 @@ class SupplyDemandDatabaseService:
             }
 
     def save_supply_demand_data(self, stock_code: str, data_list: List[Dict[str, Any]]) -> int:
-        """수급 데이터 저장 (중복 방지)"""
+        """수급 데이터 저장 (중복 방지) - 날짜 정렬 기능 추가"""
         try:
             if not data_list:
                 return 0
+
+            # 📅 데이터베이스 저장 전 날짜 오름차순 정렬 (오래된 날짜 → 최신 날짜)
+            print(f"   🔄 DB 저장 전 수급 데이터 정렬 중... ({len(data_list)}개)")
+            data_list_sorted = sorted(data_list, key=lambda x: x.get('일자', ''))
+
+            # 정렬 결과 확인
+            if data_list_sorted:
+                first_date = data_list_sorted[0].get('일자', '')
+                last_date = data_list_sorted[-1].get('일자', '')
+                print(f"   📅 수급 데이터 정렬 완료: {first_date} ~ {last_date}")
 
             table_name = f"supply_demand_{stock_code}"
             conn = self._get_connection()
@@ -342,11 +352,11 @@ class SupplyDemandDatabaseService:
                 updated_at = CURRENT_TIMESTAMP
             """
 
-            # 데이터 준비
+            # 📅 정렬된 데이터로 준비 (오름차순 정렬된 순서 유지)
             save_data = []
             current_time = datetime.now()
 
-            for item in data_list:
+            for item in data_list_sorted:  # 정렬된 데이터 사용
                 # 필드 매핑 (API 응답 → DB 필드)
                 save_record = {
                     'date': item.get('일자', '').replace('-', ''),
@@ -374,7 +384,7 @@ class SupplyDemandDatabaseService:
                 if save_record['date'] and len(save_record['date']) == 8:
                     save_data.append(save_record)
 
-            # 배치 저장
+            # 📅 배치 저장 (오름차순 정렬된 순서로 저장)
             if save_data:
                 cursor.executemany(insert_sql, save_data)
                 conn.commit()
@@ -382,7 +392,14 @@ class SupplyDemandDatabaseService:
             cursor.close()
             conn.close()
 
-            logger.info(f"수급 데이터 저장 완료 {stock_code}: {len(save_data)}건")
+            logger.info(f"수급 데이터 저장 완료 {stock_code}: {len(save_data)}건 (날짜순 정렬)")
+
+            # 저장 결과 상세 출력
+            if save_data:
+                first_saved = save_data[0]['date']
+                last_saved = save_data[-1]['date']
+                print(f"   💾 수급 데이터 저장 완료: {first_saved} ~ {last_saved} ({len(save_data)}건)")
+
             return len(save_data)
 
         except Exception as e:
@@ -446,6 +463,253 @@ class SupplyDemandDatabaseService:
                 'total_records': 0,
                 'error': str(e)
             }
+
+    def get_stock_codes_from_position(self, from_code: str = None) -> List[Dict[str, Any]]:
+        """특정 종목 코드부터 시작하여 전체 종목 리스트 조회 (스마트 재시작용)"""
+        try:
+            conn = self._get_main_connection()
+            cursor = conn.cursor(dictionary=True)
+
+            if from_code:
+                # 특정 종목부터 시작
+                cursor.execute("""
+                    SELECT code, name, market 
+                    FROM stock_codes 
+                    WHERE is_active = TRUE AND code >= %s
+                    ORDER BY code
+                """, (from_code,))
+            else:
+                # 처음부터 시작
+                cursor.execute("""
+                    SELECT code, name, market 
+                    FROM stock_codes 
+                    WHERE is_active = TRUE 
+                    ORDER BY code
+                """)
+
+            results = cursor.fetchall()
+            cursor.close()
+            conn.close()
+
+            logger.info(f"활성 종목 조회 완료 (from {from_code}): {len(results)}개")
+            return results
+
+        except Exception as e:
+            logger.error(f"종목 조회 실패: {e}")
+            return []
+
+    def find_supply_demand_restart_position(self, target_date: str = None) -> Tuple[str, int, int]:
+        """
+        수급 데이터 수집을 재시작할 위치 찾기
+
+        Args:
+            target_date: 찾을 날짜 (YYYYMMDD), None이면 오늘 날짜
+
+        Returns:
+            Tuple[시작할_종목코드, 전체_종목수, 스킵할_종목수]
+        """
+        try:
+            # 기본 날짜 설정 (오늘 날짜)
+            if not target_date:
+                target_date = datetime.now().strftime('%Y%m%d')
+
+            print(f"🔍 수급 데이터 재시작 위치 찾기: {target_date} 날짜 기준")
+            print("-" * 50)
+
+            # 1. 전체 활성 종목 리스트 (순서대로)
+            all_stocks = self.get_all_stock_codes()
+            total_count = len(all_stocks)
+
+            if not all_stocks:
+                return None, 0, 0
+
+            print(f"📊 전체 활성 종목: {total_count}개")
+
+            # 2. DB 연결 (supply_demand_db)
+            conn = self._get_connection()
+            cursor = conn.cursor()
+
+            completed_count = 0
+            restart_position = None
+
+            # 3. 종목 순서대로 확인
+            for i, stock_info in enumerate(all_stocks):
+                stock_code = stock_info['code']
+                table_name = f"supply_demand_{stock_code}"
+
+                try:
+                    # 테이블 존재 확인
+                    cursor.execute(f"SHOW TABLES LIKE '{table_name}'")
+                    table_exists = cursor.fetchone() is not None
+
+                    if not table_exists:
+                        # 테이블이 없으면 여기서부터 시작
+                        restart_position = stock_code
+                        print(f"📍 재시작 위치 발견: {stock_code} (테이블 없음)")
+                        break
+
+                    # 해당 날짜 데이터 확인
+                    cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE date = %s", (target_date,))
+                    date_exists = cursor.fetchone()[0] > 0
+
+                    if not date_exists:
+                        # 해당 날짜 데이터가 없으면 여기서부터 시작
+                        restart_position = stock_code
+                        print(f"📍 재시작 위치 발견: {stock_code} ({target_date} 데이터 없음)")
+                        break
+
+                    # 이 종목은 완료됨
+                    completed_count += 1
+
+                    # 100개마다 진행상황 출력
+                    if (i + 1) % 100 == 0:
+                        print(f"   확인 중: {i + 1}/{total_count} ({(i + 1) / total_count * 100:.1f}%)")
+
+                except Exception as e:
+                    # 오류 발생 시 이 종목부터 시작
+                    print(f"⚠️ {stock_code} 확인 중 오류, 여기서부터 시작: {e}")
+                    restart_position = stock_code
+                    break
+
+            cursor.close()
+            conn.close()
+
+            # 4. 결과 분석
+            if restart_position is None:
+                # 모든 종목이 완료됨
+                print("✅ 모든 종목이 이미 완료되었습니다!")
+                return None, total_count, total_count
+            else:
+                print(f"📊 분석 결과:")
+                print(f"   ✅ 완료된 종목: {completed_count}개")
+                print(f"   🔄 남은 종목: {total_count - completed_count}개")
+                print(f"   📍 시작 위치: {restart_position}")
+                print(f"   📈 진행률: {completed_count / total_count * 100:.1f}%")
+
+                return restart_position, total_count, completed_count
+
+        except Exception as e:
+            logger.error(f"❌ 수급 데이터 재시작 위치 찾기 실패: {e}")
+            return None, 0, 0
+
+    def get_stocks_smart_restart(self, force_update: bool = False, target_date: str = None) -> List[Dict[str, Any]]:
+        """
+        스마트 재시작용 종목 리스트 조회
+
+        Args:
+            force_update: 강제 업데이트 (모든 종목)
+            target_date: 기준 날짜 (YYYYMMDD), None이면 오늘
+
+        Returns:
+            수집해야 할 종목 리스트
+        """
+        try:
+            if force_update:
+                # 강제 업데이트: 모든 종목
+                print("🔄 강제 업데이트 모드: 전체 종목 대상")
+                return self.get_all_stock_codes()
+
+            # 스마트 재시작: 미완료 지점부터
+            restart_code, total_count, completed_count = self.find_supply_demand_restart_position(target_date)
+
+            if restart_code is None:
+                # 모든 종목 완료
+                return []
+
+            # 재시작 위치부터 종목 리스트 조회
+            remaining_stocks = self.get_stock_codes_from_position(restart_code)
+
+            print(f"🚀 수급 데이터 스마트 재시작 준비 완료:")
+            print(f"   📊 전체: {total_count}개")
+            print(f"   ✅ 완료: {completed_count}개")
+            print(f"   🔄 남은: {len(remaining_stocks)}개")
+            print(f"   📍 시작: {restart_code}")
+
+            return remaining_stocks
+
+        except Exception as e:
+            logger.error(f"❌ 수급 데이터 스마트 재시작 준비 실패: {e}")
+            # 오류 시 전체 목록 반환
+            return self.get_all_stock_codes()
+
+    def show_supply_demand_restart_analysis(self, target_date: str = None):
+        """수급 데이터 재시작 분석 결과 상세 출력 (실행 전 확인용)"""
+        try:
+            if not target_date:
+                target_date = datetime.now().strftime('%Y%m%d')
+
+            print("📊 수급 데이터 수집 재시작 분석")
+            print("=" * 60)
+            print(f"🗓️ 기준 날짜: {target_date}")
+            print(f"🔍 TR 코드: OPT10060 (일별수급데이터요청)")
+            print()
+
+            restart_code, total_count, completed_count = self.find_supply_demand_restart_position(target_date)
+
+            if restart_code is None:
+                print("🎉 분석 결과: 모든 종목이 완료되었습니다!")
+                print(f"   ✅ 완료된 종목: {completed_count}/{total_count}개 (100%)")
+                print("   💡 추가 수집이 필요하지 않습니다.")
+            else:
+                remaining_count = total_count - completed_count
+
+                print("📊 분석 결과:")
+                print(f"   📈 전체 종목: {total_count}개")
+                print(f"   ✅ 완료 종목: {completed_count}개 ({completed_count / total_count * 100:.1f}%)")
+                print(f"   🔄 남은 종목: {remaining_count}개 ({remaining_count / total_count * 100:.1f}%)")
+                print(f"   📍 시작 위치: {restart_code}")
+                print(f"   ⏱️ 예상 소요시간: {remaining_count * 3.6 / 60:.1f}분")
+
+                # 샘플 미완료 종목들 표시
+                remaining_stocks = self.get_stock_codes_from_position(restart_code)
+                if remaining_stocks:
+                    sample_codes = [stock['code'] for stock in remaining_stocks[:5]]
+                    print(f"   📝 미완료 종목 샘플: {', '.join(sample_codes)}")
+                    if len(remaining_stocks) > 5:
+                        print(f"      (외 {len(remaining_stocks) - 5}개 더...)")
+
+            print()
+            print("💡 재시작 방법:")
+            print("   python scripts/collect_supply_demand_data.py")
+            print("   (또는 python scripts/collect_supply_demand_data.py --force-full)")
+            print("=" * 60)
+
+        except Exception as e:
+            print(f"❌ 수급 데이터 재시작 분석 실패: {e}")
+
+    def get_supply_demand_collection_summary_smart(self) -> Dict[str, Any]:
+        """스마트 재시작 정보가 포함된 전체 수급 데이터 수집 현황 요약"""
+        try:
+            today = datetime.now().strftime('%Y%m%d')
+
+            # 재시작 분석
+            restart_code, total_count, completed_count = self.find_supply_demand_restart_position(today)
+
+            # 기본 통계
+            basic_summary = self.get_collection_summary()
+
+            # 스마트 재시작 정보 추가
+            smart_info = {
+                'restart_analysis': {
+                    'target_date': today,
+                    'restart_position': restart_code,
+                    'total_stocks': total_count,
+                    'completed_stocks': completed_count,
+                    'remaining_stocks': total_count - completed_count if restart_code else 0,
+                    'completion_rate': completed_count / total_count * 100 if total_count > 0 else 0,
+                    'estimated_time_minutes': (total_count - completed_count) * 3.6 / 60 if restart_code else 0,
+                    'all_completed': restart_code is None
+                }
+            }
+
+            # 기본 요약과 스마트 정보 결합
+            result = {**basic_summary, **smart_info}
+
+            return result
+
+        except Exception as e:
+            logger.error(f"스마트 수집 현황 요약 실패: {e}")
+            return self.get_collection_summary()  # 폴백
 
 
 # 편의 함수

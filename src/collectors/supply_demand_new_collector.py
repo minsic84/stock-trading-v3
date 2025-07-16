@@ -106,7 +106,7 @@ class SupplyDemandNewCollector:
             return self._create_error_result(stock_code, str(e))
 
     def _collect_update_mode(self, stock_code: str, completeness: Dict[str, Any]) -> Dict[str, Any]:
-        """업데이트 모드: 최신 데이터만 수집"""
+        """업데이트 모드: 최신 데이터만 수집 - 날짜 정렬 기능 추가"""
         try:
             print(f"   🔄 업데이트 모드: 최신 데이터 수집")
 
@@ -130,10 +130,21 @@ class SupplyDemandNewCollector:
                 if item.get('일자', '') > latest_date:
                     new_data.append(item)
 
-            # 데이터 저장
+            # 📅 새 데이터 날짜 오름차순 정렬 (오래된 날짜 → 최신 날짜)
+            if new_data:
+                print(f"   🔄 저장 전 데이터 정렬 중... ({len(new_data)}개)")
+                new_data.sort(key=lambda x: x.get('일자', ''))
+
+                # 정렬 결과 확인
+                first_date = new_data[0].get('일자', '')
+                last_date = new_data[-1].get('일자', '')
+                print(f"   📅 정렬 완료: {first_date} ~ {last_date}")
+
+            # 데이터 저장 (정렬된 순서로)
             saved_count = 0
             if new_data:
                 saved_count = self.db_service.save_supply_demand_data(stock_code, new_data)
+                print(f"   💾 정렬된 순서로 저장 완료: {saved_count}개")
 
             return {
                 'success': True,
@@ -148,7 +159,7 @@ class SupplyDemandNewCollector:
             return self._create_error_result(stock_code, f"업데이트 모드 실패: {e}")
 
     def _collect_continuous_mode(self, stock_code: str, completeness: Dict[str, Any]) -> Dict[str, Any]:
-        """연속 모드: prev_next=2로 1년치 데이터 수집 (스마트 종료 조건 추가)"""
+        """연속 모드: prev_next=2로 1년치 데이터 수집 (스마트 종료 조건 + 날짜 정렬 추가)"""
         try:
             print(f"   🔄 연속 모드: 1년치 데이터 수집")
 
@@ -156,16 +167,13 @@ class SupplyDemandNewCollector:
             request_count = 0
             max_requests = 50  # 최대 요청 수 제한
             prev_next = 0  # 첫 요청은 0
-
-            # 🔧 1년치 데이터 기준 계산
-            from datetime import datetime, timedelta
-            one_year_ago = (datetime.now() - timedelta(days=365)).strftime('%Y%m%d')
-            target_records = 250  # 1년치 예상 영업일 수
-
-            print(f"   📅 수집 목표: {one_year_ago} 이후 데이터 ({target_records}일 예상)")
-
-            # 중복 데이터 감지용
+            target_records = 250  # 1년치 평일 기준
             previous_batch_dates = set()
+
+            # 1년 전 기준 날짜 설정
+            one_year_ago = datetime.now() - timedelta(days=365)
+            cutoff_date = one_year_ago.strftime('%Y%m%d')
+            print(f"   📅 1년 전 기준 날짜: {cutoff_date}")
 
             while request_count < max_requests:
                 request_count += 1
@@ -185,35 +193,31 @@ class SupplyDemandNewCollector:
                     print(f"   ⚠️ 요청 {request_count}: 파싱된 데이터 없음")
                     break
 
-                # 🔧 새로운 종료 조건들 체크
+                # 현재 배치 날짜 분석
+                current_batch_dates = set(item.get('일자', '') for item in parsed_data if item.get('일자'))
+                if not current_batch_dates:
+                    print(f"   ⚠️ 요청 {request_count}: 유효한 날짜가 없음")
+                    break
 
-                # 1. 현재 배치의 날짜 범위 확인
-                current_batch_dates = set()
-                oldest_in_batch = "99999999"
-                newest_in_batch = "00000000"
+                oldest_in_batch = min(current_batch_dates)
+                newest_in_batch = max(current_batch_dates)
 
-                for data_item in parsed_data:
-                    date_str = data_item.get('date', '').replace('-', '')
-                    if len(date_str) == 8 and date_str.isdigit():
-                        current_batch_dates.add(date_str)
-                        oldest_in_batch = min(oldest_in_batch, date_str)
-                        newest_in_batch = max(newest_in_batch, date_str)
+                # 종료 조건 체크
+                # 1. 1년 전 데이터 도달
+                if oldest_in_batch <= cutoff_date:
+                    print(f"   ✅ 1년 전 데이터 도달 ({oldest_in_batch} <= {cutoff_date})")
+                    # 1년 전 이후 데이터만 추가
+                    filtered_data = [item for item in parsed_data if item.get('일자', '') > cutoff_date]
+                    all_data.extend(filtered_data)
+                    print(f"   📊 최종 배치: {len(filtered_data)}건 수집 (누적: {len(all_data)}건)")
+                    break
 
-                # 2. 1년 기준 날짜 도달 체크
-                if oldest_in_batch <= one_year_ago:
-                    print(f"   ✅ 1년 기준 날짜 도달! (수집된 최과거일: {oldest_in_batch})")
-                    # 1년 기준 이후 데이터만 필터링
-                    filtered_data = []
-                    for data_item in parsed_data:
-                        date_str = data_item.get('date', '').replace('-', '')
-                        if date_str >= one_year_ago:
-                            filtered_data.append(data_item)
-
-                    if filtered_data:
-                        all_data.extend(filtered_data)
-                        print(f"   📊 마지막 배치: {len(filtered_data)}건 수집 (누적: {len(all_data)}건)")
-
-                    print(f"   🎯 1년치 데이터 수집 완료!")
+                # 2. 연속 조회 종료 확인
+                tr_cont = response.get('tr_cont', '')
+                if tr_cont != '2':
+                    print(f"   ✅ 연속 조회 완료 (tr_cont: {tr_cont})")
+                    all_data.extend(parsed_data)
+                    print(f"   📊 최종 배치: {len(parsed_data)}건 수집 (누적: {len(all_data)}건)")
                     break
 
                 # 3. 중복 데이터 감지 (같은 날짜 범위가 반복되면 종료)
@@ -238,44 +242,28 @@ class SupplyDemandNewCollector:
                 # 다음 반복을 위해 현재 배치 날짜 저장
                 previous_batch_dates = current_batch_dates.copy()
 
-                # 5. 기존 종료 조건: API 연속 조회 여부 확인
-                tr_cont = response.get('tr_cont', '')
-                if tr_cont != '2':
-                    print(f"   ✅ API 연속 조회 완료 (tr_cont: {tr_cont})")
-                    break
-
-                # 다음 요청은 연속 조회
+                # 5. 연속 조회 설정
                 prev_next = 2
 
                 # API 제한 준수
                 time.sleep(self.api_delay)
 
-            # 수집 완료 통계
-            print(f"   📊 연속 수집 완료:")
-            print(f"      - 총 요청 수: {request_count}회")
-            print(f"      - 수집 데이터: {len(all_data)}건")
-
+            # 📅 전체 수집 데이터 날짜 오름차순 정렬 (오래된 날짜 → 최신 날짜)
             if all_data:
-                # 수집된 데이터의 날짜 범위 확인
-                all_dates = []
-                for item in all_data:
-                    date_str = item.get('date', '').replace('-', '')
-                    if len(date_str) == 8 and date_str.isdigit():
-                        all_dates.append(date_str)
+                print(f"   🔄 전체 데이터 정렬 중... ({len(all_data)}개)")
+                all_data.sort(key=lambda x: x.get('일자', ''))
 
-                if all_dates:
-                    all_dates.sort()
-                    print(f"      - 날짜 범위: {all_dates[0]} ~ {all_dates[-1]}")
-                    print(f"      - 수집 기간: {len(set(all_dates))}일")
+                # 정렬 결과 확인
+                first_date = all_data[0].get('일자', '')
+                last_date = all_data[-1].get('일자', '')
+                print(f"   📅 전체 정렬 완료: {first_date} ~ {last_date}")
 
-            # 수집된 데이터 저장
+            # 수집된 데이터 저장 (정렬된 순서로)
             saved_count = 0
             if all_data:
-                print(f"   💾 데이터 저장 중: {len(all_data)}건")
+                print(f"   💾 정렬된 데이터 저장 중: {len(all_data)}건")
                 saved_count = self.db_service.save_supply_demand_data(stock_code, all_data)
-
-            # 1년치 완성 여부 체크
-            final_completeness = self.db_service.get_data_completeness(stock_code)
+                print(f"   💾 정렬된 순서로 저장 완료: {saved_count}개")
 
             return {
                 'success': True,
@@ -283,11 +271,7 @@ class SupplyDemandNewCollector:
                 'mode': 'continuous',
                 'requests_made': request_count,
                 'collected_records': len(all_data),
-                'saved_records': saved_count,
-                'final_completion_rate': final_completeness['completion_rate'],
-                'is_complete': final_completeness['is_complete'],
-                'termination_reason': self._get_termination_reason(request_count, max_requests, len(all_data),
-                                                                   target_records)
+                'saved_records': saved_count
             }
 
         except Exception as e:

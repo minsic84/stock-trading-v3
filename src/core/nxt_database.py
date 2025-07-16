@@ -9,7 +9,7 @@ NXT 전용 데이터베이스 서비스
 """
 
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timedelta
 from src.core.database import MySQLMultiSchemaService
 
@@ -214,10 +214,20 @@ class NXTDatabaseService:
 
     def save_daily_data_batch(self, stock_code: str, daily_data: List[Dict[str, Any]],
                               replace_mode: bool = False, update_recent_only: bool = False) -> int:
-        """일봉 데이터 배치 저장 (교체 모드 및 최근 데이터 업데이트 모드 지원)"""
+        """일봉 데이터 배치 저장 (전체 모드 및 최근 데이터 업데이트 모드 지원) - 날짜 정렬 기능 추가"""
         try:
             if not daily_data:
                 return 0
+
+            # 📅 데이터베이스 저장 전 날짜 오름차순 정렬 (오래된 날짜 → 최신 날짜)
+            print(f"  🔄 DB 저장 전 데이터 정렬 중... ({len(daily_data)}개)")
+            daily_data_sorted = sorted(daily_data, key=lambda x: x.get('date', ''))
+
+            # 정렬 결과 확인
+            if daily_data_sorted:
+                first_date = daily_data_sorted[0].get('date', '')
+                last_date = daily_data_sorted[-1].get('date', '')
+                print(f"  📅 정렬 완료: {first_date} ~ {last_date}")
 
             # 테이블 존재 확인 및 생성
             if not self.daily_table_exists(stock_code):
@@ -283,9 +293,9 @@ class NXTDatabaseService:
                     )
                 """
 
-            # 데이터 전처리
+            # 📅 정렬된 데이터로 전처리 (오름차순 정렬된 순서 유지)
             processed_data = []
-            for data in daily_data:
+            for data in daily_data_sorted:  # 정렬된 데이터 사용
                 processed_data.append({
                     'date': data.get('date', ''),
                     'open_price': data.get('open_price', 0),
@@ -300,7 +310,7 @@ class NXTDatabaseService:
                     'created_at': datetime.now()
                 })
 
-            # 배치 실행
+            # 📅 배치 실행 (오름차순 정렬된 순서로 저장)
             cursor.executemany(insert_sql, processed_data)
             conn.commit()
 
@@ -309,7 +319,14 @@ class NXTDatabaseService:
             conn.close()
 
             mode_desc = "전체교체" if replace_mode else ("최근업데이트" if update_recent_only else "일반삽입")
-            logger.info(f"✅ {stock_code} 일봉 데이터 저장 완료 ({mode_desc}): {saved_count}개")
+            logger.info(f"✅ {stock_code} 일봉 데이터 저장 완료 ({mode_desc}): {saved_count}개 (날짜순 정렬)")
+
+            # 저장 결과 상세 출력
+            if processed_data:
+                first_saved = processed_data[0]['date']
+                last_saved = processed_data[-1]['date']
+                print(f"  💾 저장 완료: {first_saved} ~ {last_saved} ({saved_count}개)")
+
             return saved_count
 
         except Exception as e:
@@ -462,6 +479,219 @@ class NXTDatabaseService:
         except Exception as e:
             logger.error(f"❌ NXT DB 연결 테스트 실패: {e}")
             return False
+
+    def get_nxt_stocks_from_position(self, from_code: str = None) -> List[str]:
+        """특정 종목 코드부터 시작하여 NXT 종목 리스트 조회 (스마트 재시작용)"""
+        try:
+            conn = self.db_service._get_connection('main')
+            cursor = conn.cursor()
+
+            if from_code:
+                # 특정 종목부터 시작
+                query = """
+                    SELECT code 
+                    FROM stock_codes 
+                    WHERE is_active = TRUE AND code >= %s
+                    ORDER BY code
+                """
+                cursor.execute(query, (from_code,))
+            else:
+                # 처음부터 시작
+                query = """
+                    SELECT code 
+                    FROM stock_codes 
+                    WHERE is_active = TRUE 
+                    ORDER BY code
+                """
+                cursor.execute(query)
+
+            result = [row[0] for row in cursor.fetchall()]
+            cursor.close()
+            conn.close()
+
+            logger.info(f"✅ NXT 종목 조회 완료 (from {from_code}): {len(result)}개")
+            return result
+
+        except Exception as e:
+            logger.error(f"❌ NXT 종목 조회 실패: {e}")
+            return []
+
+    def find_nxt_restart_position(self, target_date: str = None) -> Tuple[str, int, int]:
+        """
+        수집을 재시작할 위치 찾기
+
+        Args:
+            target_date: 찾을 날짜 (YYYYMMDD), None이면 오늘 날짜
+
+        Returns:
+            Tuple[시작할_종목코드, 전체_종목수, 스킵할_종목수]
+        """
+        try:
+            # 기본 날짜 설정 (오늘 날짜)
+            if not target_date:
+                target_date = datetime.now().strftime('%Y%m%d')
+
+            print(f"🔍 재시작 위치 찾기: {target_date} 날짜 기준")
+            print("-" * 50)
+
+            # 1. 전체 NXT 종목 리스트 (순서대로)
+            all_nxt_codes = self.get_nxt_stock_codes()
+            total_count = len(all_nxt_codes)
+
+            if not all_nxt_codes:
+                return None, 0, 0
+
+            print(f"📊 전체 NXT 종목: {total_count}개")
+
+            # 2. DB 연결 (daily_prices_db)
+            conn = self.db_service._get_connection('daily')
+            cursor = conn.cursor()
+
+            completed_count = 0
+            restart_position = None
+
+            # 3. 종목 순서대로 확인
+            for i, stock_code in enumerate(all_nxt_codes):
+                table_name = f"daily_prices_{stock_code}"
+
+                try:
+                    # 테이블 존재 확인
+                    cursor.execute(f"SHOW TABLES LIKE '{table_name}'")
+                    table_exists = cursor.fetchone() is not None
+
+                    if not table_exists:
+                        # 테이블이 없으면 여기서부터 시작
+                        restart_position = stock_code
+                        print(f"📍 재시작 위치 발견: {stock_code} (테이블 없음)")
+                        break
+
+                    # 해당 날짜 데이터 확인
+                    cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE date = %s", (target_date,))
+                    date_exists = cursor.fetchone()[0] > 0
+
+                    if not date_exists:
+                        # 해당 날짜 데이터가 없으면 여기서부터 시작
+                        restart_position = stock_code
+                        print(f"📍 재시작 위치 발견: {stock_code} ({target_date} 데이터 없음)")
+                        break
+
+                    # 이 종목은 완료됨
+                    completed_count += 1
+
+                    # 10개마다 진행상황 출력
+                    if (i + 1) % 10 == 0:
+                        print(f"   확인 중: {i + 1}/{total_count} ({(i + 1) / total_count * 100:.1f}%)")
+
+                except Exception as e:
+                    # 오류 발생 시 이 종목부터 시작
+                    print(f"⚠️ {stock_code} 확인 중 오류, 여기서부터 시작: {e}")
+                    restart_position = stock_code
+                    break
+
+            cursor.close()
+            conn.close()
+
+            # 4. 결과 분석
+            if restart_position is None:
+                # 모든 종목이 완료됨
+                print("✅ 모든 종목이 이미 완료되었습니다!")
+                return None, total_count, total_count
+            else:
+                print(f"📊 분석 결과:")
+                print(f"   ✅ 완료된 종목: {completed_count}개")
+                print(f"   🔄 남은 종목: {total_count - completed_count}개")
+                print(f"   📍 시작 위치: {restart_position}")
+                print(f"   📈 진행률: {completed_count / total_count * 100:.1f}%")
+
+                return restart_position, total_count, completed_count
+
+        except Exception as e:
+            logger.error(f"❌ 재시작 위치 찾기 실패: {e}")
+            return None, 0, 0
+
+    def get_nxt_stocks_smart_restart(self, force_update: bool = False, target_date: str = None) -> List[str]:
+        """
+        스마트 재시작용 NXT 종목 리스트 조회
+
+        Args:
+            force_update: 강제 업데이트 (모든 종목)
+            target_date: 기준 날짜 (YYYYMMDD), None이면 오늘
+
+        Returns:
+            수집해야 할 종목 리스트
+        """
+        try:
+            if force_update:
+                # 강제 업데이트: 모든 종목
+                print("🔄 강제 업데이트 모드: 전체 종목 대상")
+                return self.get_nxt_stock_codes()
+
+            # 스마트 재시작: 미완료 지점부터
+            restart_code, total_count, completed_count = self.find_nxt_restart_position(target_date)
+
+            if restart_code is None:
+                # 모든 종목 완료
+                return []
+
+            # 재시작 위치부터 종목 리스트 조회
+            remaining_codes = self.get_nxt_stocks_from_position(restart_code)
+
+            print(f"🚀 스마트 재시작 준비 완료:")
+            print(f"   📊 전체: {total_count}개")
+            print(f"   ✅ 완료: {completed_count}개")
+            print(f"   🔄 남은: {len(remaining_codes)}개")
+            print(f"   📍 시작: {restart_code}")
+
+            return remaining_codes
+
+        except Exception as e:
+            logger.error(f"❌ 스마트 재시작 준비 실패: {e}")
+            # 오류 시 전체 목록 반환
+            return self.get_nxt_stock_codes()
+
+    def show_restart_analysis(self, target_date: str = None):
+        """재시작 분석 결과 상세 출력 (실행 전 확인용)"""
+        try:
+            if not target_date:
+                target_date = datetime.now().strftime('%Y%m%d')
+
+            print("📊 NXT 일봉 수집 재시작 분석")
+            print("=" * 60)
+            print(f"🗓️ 기준 날짜: {target_date}")
+            print()
+
+            restart_code, total_count, completed_count = self.find_nxt_restart_position(target_date)
+
+            if restart_code is None:
+                print("🎉 분석 결과: 모든 종목이 완료되었습니다!")
+                print(f"   ✅ 완료된 종목: {completed_count}/{total_count}개 (100%)")
+                print("   💡 추가 수집이 필요하지 않습니다.")
+            else:
+                remaining_count = total_count - completed_count
+
+                print("📊 분석 결과:")
+                print(f"   📈 전체 종목: {total_count}개")
+                print(f"   ✅ 완료 종목: {completed_count}개 ({completed_count / total_count * 100:.1f}%)")
+                print(f"   🔄 남은 종목: {remaining_count}개 ({remaining_count / total_count * 100:.1f}%)")
+                print(f"   📍 시작 위치: {restart_code}")
+                print(f"   ⏱️ 예상 소요시간: {remaining_count * 3.6 / 60:.1f}분")
+
+                # 샘플 미완료 종목들 표시
+                remaining_codes = self.get_nxt_stocks_from_position(restart_code)
+                if remaining_codes:
+                    sample_codes = remaining_codes[:5]
+                    print(f"   📝 미완료 종목 샘플: {', '.join(sample_codes)}")
+                    if len(remaining_codes) > 5:
+                        print(f"      (외 {len(remaining_codes) - 5}개 더...)")
+
+            print()
+            print("💡 재시작 방법:")
+            print("   python scripts/update_nxt_daily.py")
+            print("   (또는 python scripts/update_nxt_daily.py --force)")
+            print("=" * 60)
+
+        except Exception as e:
+            print(f"❌ 재시작 분석 실패: {e}")
 
 
 # 편의 함수들
