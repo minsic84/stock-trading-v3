@@ -239,8 +239,12 @@ class SectorDailyCollector:
                 # API 딜레이
                 time.sleep(self.api_delay)
 
-            # 데이터 저장
+            # 데이터 저장 전 날짜순 정렬
             if all_data:
+                # 날짜순 오름차순 정렬 (오래된 날짜부터)
+                all_data.sort(key=lambda x: x['date'])
+                print(f"   📅 데이터 정렬 완료: {all_data[0]['date']} ~ {all_data[-1]['date']}")
+
                 saved_count = self.db_service.save_sector_data(sector_code, all_data)
                 print(f"   💾 저장 완료: {saved_count}/{len(all_data)}개")
                 return saved_count
@@ -291,6 +295,10 @@ class SectorDailyCollector:
                 new_data = parsed_data
 
             if new_data:
+                # 날짜순 정렬 후 저장
+                new_data.sort(key=lambda x: x['date'])
+                print(f"   📅 신규 데이터 정렬 완료: {len(new_data)}개")
+
                 saved_count = self.db_service.save_sector_data(sector_code, new_data)
                 print(f"   📅 최신 데이터 저장: {saved_count}개")
                 return saved_count
